@@ -1,0 +1,6 @@
+streamlit 
+numpy 
+segyio 
+matplotlib 
+scipy 
+tqdm
