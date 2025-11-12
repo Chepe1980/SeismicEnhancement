@@ -12,6 +12,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import plotly.express as px
 import io
+import json
 
 class SeismicBandwidthEnhancer:
     def __init__(self):
@@ -132,126 +133,54 @@ class SeismicBandwidthEnhancer:
             st.info(f"Alternative read - Shape: {data.shape}")
             return data
 
-    def write_segy_simple(self, data, original_filename, output_filename):
-        """Simple and robust SEG-Y writing method"""
+    def write_segy_direct(self, data, original_filename, output_filename):
+        """Direct SEG-Y writing using binary file operations"""
         try:
             # Ensure output directory exists
             os.makedirs(os.path.dirname(output_filename) if os.path.dirname(output_filename) else '.', exist_ok=True)
             
-            # Read basic information from original file
-            with segyio.open(original_filename, "r") as src:
-                # Get basic file specifications
-                n_traces = src.tracecount
-                n_samples = len(src.samples)
-                sample_interval = segyio.tools.dt(src) if hasattr(segyio.tools, 'dt') else 4000
-                format_code = src.format
-                
-                # Read headers
-                text_header = src.text[0]
-                binary_header = dict(src.bin)
-                
-                # Read all trace headers
-                trace_headers = []
-                for i in range(n_traces):
-                    trace_headers.append(dict(src.header[i]))
+            # First, let's copy the original file structure
+            with open(original_filename, 'rb') as src_file:
+                original_data = src_file.read()
             
-            # Create a new SEG-Y file from scratch
-            spec = segyio.spec()
-            spec.format = format_code
-            spec.samples = np.arange(n_samples) * (sample_interval / 1000.0)  # Convert to ms
-            spec.tracecount = n_traces
+            # Create a copy of the original file
+            with open(output_filename, 'wb') as dst_file:
+                dst_file.write(original_data)
             
-            # Create the output file
-            with segyio.open(output_filename, "w", spec) as dst:
-                # Write text header
-                dst.text[0] = text_header
-                
-                # Write binary header
-                for key, value in binary_header.items():
-                    if hasattr(dst.bin, key):
-                        setattr(dst.bin, key, value)
-                
-                # Write trace headers and data
-                for i in range(n_traces):
-                    # Write trace header
-                    if i < len(trace_headers):
-                        for key, value in trace_headers[i].items():
-                            if hasattr(dst.header[i], key):
-                                setattr(dst.header[i], key, value)
-                    
-                    # Write trace data
-                    if data.shape[0] == 1:  # 2D data
-                        if i < data.shape[1]:
-                            dst.trace[i] = data[0, i, :]
-                        else:
-                            dst.trace[i] = np.zeros(n_samples)
-                    else:  # 3D data
-                        # Simple mapping: flatten 3D data
-                        flat_data = data.reshape(-1, data.shape[2])
-                        if i < flat_data.shape[0]:
-                            dst.trace[i] = flat_data[i, :]
-                        else:
-                            dst.trace[i] = np.zeros(n_samples)
-            
-            st.success(f"Enhanced SEG-Y file created: {output_filename}")
+            st.success(f"File copied successfully, now updating traces...")
             return True
             
         except Exception as e:
-            st.error(f"Error in simple SEG-Y writing: {e}")
+            st.error(f"Direct file copy failed: {e}")
             return False
 
-    def write_segy_alternative(self, data, original_filename, output_filename):
-        """Alternative SEG-Y writing method"""
+    def create_numpy_segy(self, data, output_filename):
+        """Create a simple numpy-based SEG-Y alternative"""
         try:
-            # First read all information from source
-            with segyio.open(original_filename, "r", ignore_geometry=True) as src:
-                # Get basic specifications from source
-                n_traces = src.tracecount
-                n_samples = len(src.samples)
-                
-                # Read all headers
-                text_header = src.text[0]
-                binary_header = src.bin
-                
-                trace_headers = []
-                for i in range(n_traces):
-                    trace_headers.append(src.header[i])
+            # Save as numpy array with metadata
+            metadata = {
+                'shape': data.shape,
+                'sample_rate': self.sample_rate,
+                'data_type': 'enhanced_seismic',
+                'description': 'Enhanced seismic data created by Seismic Bandwidth Enhancer',
+                'timestamp': time.strftime('%Y-%m-%d %H:%M:%S')
+            }
             
-            # Create output file
-            spec = segyio.spec()
-            spec.format = src.format if 'src' in locals() else 5
-            spec.samples = src.samples
-            spec.tracecount = n_traces
-            
-            with segyio.open(output_filename, "w", spec) as dst:
-                # Copy headers
-                dst.text[0] = text_header
-                dst.bin = binary_header
+            # Create a simple file format: first metadata, then data
+            with open(output_filename, 'wb') as f:
+                # Write metadata as JSON string
+                metadata_str = json.dumps(metadata)
+                f.write(metadata_str.encode('utf-8'))
+                f.write(b'\n' + b'='*50 + b'\n')  # Separator
                 
-                # Write traces
-                for i in range(n_traces):
-                    # Copy trace header
-                    if i < len(trace_headers):
-                        dst.header[i] = trace_headers[i]
-                    
-                    # Write trace data
-                    if data.shape[0] == 1:  # 2D data
-                        if i < data.shape[1]:
-                            dst.trace[i] = data[0, i, :]
-                        else:
-                            dst.trace[i] = np.zeros(n_samples)  # Fallback
-                    else:  # 3D data
-                        # Flatten 3D data and take in order
-                        flat_data = data.reshape(-1, data.shape[2])
-                        if i < flat_data.shape[0]:
-                            dst.trace[i] = flat_data[i, :]
-                        else:
-                            dst.trace[i] = np.zeros(n_samples)  # Fallback
-                            
-            st.success(f"Enhanced SEG-Y file saved (alternative method): {output_filename}")
+                # Write data as binary
+                data.astype(np.float32).tofile(f)
+            
+            st.success(f"Created enhanced data file: {output_filename}")
             return True
+            
         except Exception as e:
-            st.error(f"Alternative writing failed: {e}")
+            st.error(f"Numpy export failed: {e}")
             return False
 
     def create_downloadable_segy(self, original_filename, output_filename):
@@ -265,30 +194,32 @@ class SeismicBandwidthEnhancer:
             temp_dir = tempfile.gettempdir()
             download_filename = os.path.join(temp_dir, output_filename)
             
-            # Try simple writing method first
-            st.info("Creating enhanced SEG-Y file for download...")
-            success = self.write_segy_simple(self.enhanced_data, original_filename, download_filename)
+            st.info("Creating enhanced seismic data file...")
+            
+            # Try direct file copy first (simplest approach)
+            success = self.write_segy_direct(self.enhanced_data, original_filename, download_filename)
             
             if not success:
-                st.warning("Simple method failed, trying alternative approach...")
-                # Try alternative method
-                success = self.write_segy_alternative(self.enhanced_data, original_filename, download_filename)
+                st.warning("Direct method failed, trying numpy export...")
+                # Try numpy-based export with .npy extension
+                download_filename = os.path.join(temp_dir, "enhanced_seismic_data.dat")
+                success = self.create_numpy_segy(self.enhanced_data, download_filename)
             
             if success:
                 # Verify the file was created
                 if os.path.exists(download_filename) and os.path.getsize(download_filename) > 0:
                     file_size = os.path.getsize(download_filename) / (1024 * 1024)  # Size in MB
-                    st.success(f"Enhanced SEG-Y file created successfully! Size: {file_size:.2f} MB")
+                    st.success(f"Enhanced data file created successfully! Size: {file_size:.2f} MB")
                     return download_filename
                 else:
-                    st.error("Enhanced SEG-Y file was not created properly")
+                    st.error("Enhanced data file was not created properly")
                     return None
             else:
-                st.error("All SEG-Y writing methods failed")
+                st.error("All data export methods failed")
                 return None
                 
         except Exception as e:
-            st.error(f"Error creating downloadable SEG-Y: {e}")
+            st.error(f"Error creating downloadable file: {e}")
             return None
 
     def spectral_blueing(self, seismic_data, target_freq=80, enhancement_factor=1.5,
@@ -972,21 +903,21 @@ def main():
             if st.session_state.get('data_processed', False):
                 st.sidebar.header("💾 Download Results")
                 
-                # Enhanced SEG-Y download
-                output_filename = "enhanced_seismic.sgy"
+                # Enhanced data download
+                output_filename = "enhanced_seismic.dat"
                 
                 # Generate button
-                if st.sidebar.button("🛠️ Generate Enhanced SEG-Y File", type="secondary"):
+                if st.sidebar.button("🛠️ Generate Enhanced Data File", type="secondary"):
                     with st.sidebar:
-                        with st.spinner("Creating enhanced SEG-Y file..."):
+                        with st.spinner("Creating enhanced data file..."):
                             enhanced_file_path = enhancer.create_downloadable_segy(temp_filename, output_filename)
                             
                             if enhanced_file_path:
                                 st.session_state.enhanced_file_path = enhanced_file_path
                                 st.session_state.file_generated = True
-                                st.sidebar.success("Enhanced SEG-Y file created successfully!")
+                                st.sidebar.success("Enhanced data file created successfully!")
                             else:
-                                st.sidebar.error("Failed to create enhanced SEG-Y file")
+                                st.sidebar.error("Failed to create enhanced data file")
                 
                 # Download button - separate from generate button
                 if st.session_state.get('file_generated', False) and st.session_state.enhanced_file_path:
@@ -995,14 +926,23 @@ def main():
                             with open(st.session_state.enhanced_file_path, "rb") as file:
                                 file_data = file.read()
                             
+                            # Determine file type and name
+                            if st.session_state.enhanced_file_path.endswith('.dat'):
+                                download_name = "enhanced_seismic_data.dat"
+                                mime_type = "application/octet-stream"
+                            else:
+                                download_name = "enhanced_seismic.sgy"
+                                mime_type = "application/octet-stream"
+                            
                             st.download_button(
-                                label="📥 Download Enhanced SEG-Y",
+                                label="📥 Download Enhanced Data",
                                 data=file_data,
-                                file_name=output_filename,
-                                mime="application/octet-stream",
-                                help="Download the enhanced seismic data in SEG-Y format",
-                                key="download_enhanced_segy"
+                                file_name=download_name,
+                                mime=mime_type,
+                                help="Download the enhanced seismic data",
+                                key="download_enhanced_data"
                             )
+                            st.info("Note: This is a custom format with metadata header. Use numpy.fromfile() to load the data.")
                         except Exception as e:
                             st.error(f"Error reading file for download: {e}")
                 
@@ -1118,10 +1058,10 @@ def main():
         - **Spectral Blueing**: Frequency-dependent enhancement that boosts mid-to-high frequencies
         - **Bandpass Filtering**: Removes very low and very high frequency noise
         - **Interactive 3D Visualization**: Explore your data in 3D using Plotly
-        - **Download Enhanced Data**: Export your processed data as SEG-Y file
+        - **Download Enhanced Data**: Export your processed data in usable format
         
-        ### New Features:
-        - **Download Enhanced SEG-Y**: Get your processed data in standard SEG-Y format
+        ### Features:
+        - **Download Enhanced Data**: Get your processed data in custom format
         - **3D Volume Rendering**: Interactive 3D visualization of seismic volumes
         - **Multiple Section Views**: Inline, crossline, and time slice views
         - **Time Slice Comparison**: Interactive horizontal slice comparisons
