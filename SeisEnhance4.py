@@ -131,14 +131,15 @@ class SeismicBandwidthEnhancer:
             
             st.info(f"Alternative read - Shape: {data.shape}")
             return data
-
-    def write_segy(self, data, original_filename, output_filename):
+            
+    
+        def write_segy(self, data, original_filename, output_filename):
         """Write enhanced data back to SEG-Y file"""
         try:
             # Ensure output directory exists
             os.makedirs(os.path.dirname(output_filename) if os.path.dirname(output_filename) else '.', exist_ok=True)
             
-            # Copy the original SEG-Y structure and write new data
+            # First, read all necessary information from the source file
             with segyio.open(original_filename, "r") as src:
                 # Create spec based on original file
                 spec = segyio.spec()
@@ -155,37 +156,49 @@ class SeismicBandwidthEnhancer:
                 except:
                     pass  # If geometry doesn't exist, continue without it
                 
-                with segyio.open(output_filename, "w", spec) as dst:
-                    # Copy textual headers
-                    dst.text[0] = src.text[0]
-                    if hasattr(src, 'text') and len(src.text) > 1:
-                        for i in range(1, len(src.text)):
-                            dst.text[i] = src.text[i]
+                # Read all headers and text data first
+                text_headers = []
+                for i in range(len(src.text)):
+                    text_headers.append(src.text[i])
+                
+                binary_header = src.bin
+                
+                trace_headers = []
+                for i in range(src.tracecount):
+                    trace_headers.append(src.header[i])
+            
+            # Now create the output file with the spec
+            with segyio.open(output_filename, "w", spec) as dst:
+                # Write textual headers
+                for i, text in enumerate(text_headers):
+                    if i < len(dst.text):
+                        dst.text[i] = text
+                
+                # Write binary header
+                dst.bin = binary_header
+                
+                # Write trace headers and new trace data
+                for i in range(spec.tracecount):
+                    if i < len(trace_headers):
+                        dst.header[i] = trace_headers[i]
                     
-                    # Copy binary header
-                    dst.bin = src.bin
-                    
-                    # Copy trace headers and write new traces
-                    for i in range(src.tracecount):
-                        dst.header[i] = src.header[i]
-                        
-                        # Map the enhanced data back to trace order
-                        if data.shape[0] == 1:  # 2D data
-                            if i < data.shape[1]:
-                                dst.trace[i] = data[0, i, :]
-                            else:
-                                # If trace count doesn't match, use first trace pattern
-                                dst.trace[i] = data[0, 0, :]
-                        else:  # 3D data
-                            # For 3D data, we need to map back to original geometry
-                            inline_idx, xline_idx = self._get_trace_position(i, src)
-                            if (inline_idx < data.shape[0] and 
-                                xline_idx < data.shape[1] and 
-                                inline_idx >= 0 and xline_idx >= 0):
-                                dst.trace[i] = data[inline_idx, xline_idx, :]
-                            else:
-                                # Fallback: use first trace pattern
-                                dst.trace[i] = data[0, 0, :]
+                    # Map the enhanced data back to trace order
+                    if data.shape[0] == 1:  # 2D data
+                        if i < data.shape[1]:
+                            dst.trace[i] = data[0, i, :]
+                        else:
+                            # If trace count doesn't match, use first trace pattern
+                            dst.trace[i] = data[0, 0, :]
+                    else:  # 3D data
+                        # For 3D data, we need to map back to original geometry
+                        inline_idx, xline_idx = self._get_trace_position(i, spec)
+                        if (inline_idx < data.shape[0] and 
+                            xline_idx < data.shape[1] and 
+                            inline_idx >= 0 and xline_idx >= 0):
+                            dst.trace[i] = data[inline_idx, xline_idx, :]
+                        else:
+                            # Fallback: use first trace pattern
+                            dst.trace[i] = data[0, 0, :]
                         
             st.success(f"Enhanced SEG-Y file saved: {output_filename}")
             return True
@@ -195,13 +208,13 @@ class SeismicBandwidthEnhancer:
             # Try alternative writing method
             return self.write_segy_alternative(data, original_filename, output_filename)
 
-    def _get_trace_position(self, trace_idx, segyfile):
-        """Get inline and crossline position for a trace index"""
+    def _get_trace_position(self, trace_idx, spec):
+        """Get inline and crossline position for a trace index using spec"""
         try:
             # For 3D data with proper geometry
-            if hasattr(segyfile, 'ilines') and hasattr(segyfile, 'xlines'):
-                if segyfile.ilines is not None and segyfile.xlines is not None:
-                    n_xlines = len(segyfile.xlines)
+            if hasattr(spec, 'ilines') and hasattr(spec, 'xlines'):
+                if spec.ilines is not None and spec.xlines is not None:
+                    n_xlines = len(spec.xlines)
                     inline_idx = trace_idx // n_xlines
                     xline_idx = trace_idx % n_xlines
                     return inline_idx, xline_idx
@@ -214,40 +227,50 @@ class SeismicBandwidthEnhancer:
     def write_segy_alternative(self, data, original_filename, output_filename):
         """Alternative SEG-Y writing method - simpler approach"""
         try:
+            # First read all information from source
             with segyio.open(original_filename, "r", ignore_geometry=True) as src:
                 # Get basic specifications from source
                 n_traces = src.tracecount
                 n_samples = len(src.samples)
                 
-                # Create output spec
-                spec = segyio.spec()
-                spec.format = src.format
-                spec.samples = src.samples
-                spec.tracecount = n_traces
+                # Read all headers
+                text_header = src.text[0]
+                binary_header = src.bin
                 
-                with segyio.open(output_filename, "w", spec) as dst:
-                    # Copy headers
-                    dst.text[0] = src.text[0]
-                    dst.bin = src.bin
+                trace_headers = []
+                for i in range(n_traces):
+                    trace_headers.append(src.header[i])
+            
+            # Create output file
+            spec = segyio.spec()
+            spec.format = src.format if 'src' in locals() else 5
+            spec.samples = np.arange(n_samples) * 4000  # Default 4ms if not available
+            spec.tracecount = n_traces
+            
+            with segyio.open(output_filename, "w", spec) as dst:
+                # Copy headers
+                dst.text[0] = text_header
+                dst.bin = binary_header
+                
+                # Write traces
+                for i in range(n_traces):
+                    # Copy trace header
+                    if i < len(trace_headers):
+                        dst.header[i] = trace_headers[i]
                     
-                    # Write traces
-                    for i in range(n_traces):
-                        # Copy trace header
-                        dst.header[i] = src.header[i]
-                        
-                        # Write trace data
-                        if data.shape[0] == 1:  # 2D data
-                            if i < data.shape[1]:
-                                dst.trace[i] = data[0, i, :]
-                            else:
-                                dst.trace[i] = np.zeros(n_samples)  # Fallback
-                        else:  # 3D data
-                            # Flatten 3D data and take in order
-                            flat_data = data.reshape(-1, data.shape[2])
-                            if i < flat_data.shape[0]:
-                                dst.trace[i] = flat_data[i, :]
-                            else:
-                                dst.trace[i] = np.zeros(n_samples)  # Fallback
+                    # Write trace data
+                    if data.shape[0] == 1:  # 2D data
+                        if i < data.shape[1]:
+                            dst.trace[i] = data[0, i, :]
+                        else:
+                            dst.trace[i] = np.zeros(n_samples)  # Fallback
+                    else:  # 3D data
+                        # Flatten 3D data and take in order
+                        flat_data = data.reshape(-1, data.shape[2])
+                        if i < flat_data.shape[0]:
+                            dst.trace[i] = flat_data[i, :]
+                        else:
+                            dst.trace[i] = np.zeros(n_samples)  # Fallback
                             
             st.success(f"Enhanced SEG-Y file saved (alternative method): {output_filename}")
             return True
