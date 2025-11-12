@@ -667,7 +667,7 @@ class SeismicBandwidthEnhancer:
         fig.update_xaxes(title_text="Crossline", row=1, col=1)
         fig.update_xaxes(title_text="Crossline", row=1, col=2)
         fig.update_yaxes(title_text="Inline", row=1, col=1)
-        fig.update_yaxes(title_text="Inline", row=1, col_2)
+        fig.update_yaxes(title_text="Inline", row=1, col=2)
         
         return fig
 
