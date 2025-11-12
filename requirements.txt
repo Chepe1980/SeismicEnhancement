@@ -4,3 +4,4 @@ segyio
 matplotlib 
 scipy 
 tqdm
+plotly
