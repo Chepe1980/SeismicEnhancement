@@ -75,17 +75,15 @@ class SeismicBandwidthEnhancer:
         enhanced_data = np.zeros_like(seismic_data)
         
         n_inlines, n_xlines, n_samples = seismic_data.shape
+        
+        # Create progress bar
         progress_bar = st.progress(0)
         status_text = st.empty()
+        total_traces = n_inlines * n_xlines
+        processed_traces = 0
         
         for i in range(n_inlines):
             for j in range(n_xlines):
-                # Update progress
-                if j % 100 == 0:
-                    progress = (i * n_xlines + j) / (n_inlines * n_xlines)
-                    progress_bar.progress(progress)
-                    status_text.text(f"Processing trace {j+1}/{n_xlines}")
-                
                 trace = seismic_data[i, j, :].copy()
                 
                 # Remove mean and detrend
@@ -126,6 +124,13 @@ class SeismicBandwidthEnhancer:
                     enhanced_trace = enhanced_trace * (np.std(trace) / np.std(enhanced_trace))
                 
                 enhanced_data[i, j, :] = enhanced_trace
+                
+                # Update progress
+                processed_traces += 1
+                if processed_traces % 100 == 0:
+                    progress = processed_traces / total_traces
+                    progress_bar.progress(progress)
+                    status_text.text(f"Processing trace {processed_traces}/{total_traces}")
         
         progress_bar.progress(1.0)
         status_text.text("Spectral blueing completed!")
@@ -175,17 +180,14 @@ class SeismicBandwidthEnhancer:
         enhanced_data = np.zeros_like(seismic_data)
         n_inlines, n_xlines, n_samples = seismic_data.shape
         
+        # Create progress bar
         progress_bar = st.progress(0)
         status_text = st.empty()
+        total_traces = n_inlines * n_xlines
+        processed_traces = 0
         
         for i in range(n_inlines):
             for j in range(n_xlines):
-                # Update progress
-                if j % 100 == 0:
-                    progress = (i * n_xlines + j) / (n_inlines * n_xlines)
-                    progress_bar.progress(progress)
-                    status_text.text(f"Filtering trace {j+1}/{n_xlines}")
-                
                 trace = seismic_data[i, j, :].copy()
                 
                 # Remove any NaN or Inf values
@@ -198,6 +200,13 @@ class SeismicBandwidthEnhancer:
                 except Exception as e:
                     st.warning(f"Error filtering trace {j}: {e}")
                     enhanced_data[i, j, :] = trace  # Use original if filtering fails
+                
+                # Update progress
+                processed_traces += 1
+                if processed_traces % 100 == 0:
+                    progress = processed_traces / total_traces
+                    progress_bar.progress(progress)
+                    status_text.text(f"Filtering trace {processed_traces}/{total_traces}")
         
         progress_bar.progress(1.0)
         status_text.text("Bandpass filtering completed!")
@@ -368,7 +377,9 @@ class SeismicBandwidthEnhancer:
         plt.tight_layout()
         return fig
 
-    def enhance_bandwidth(self, file_path, method='spectral_blueing', **kwargs):
+    def enhance_bandwidth(self, file_path, method='spectral_blueing', 
+                         target_freq=80, enhancement_factor=1.5, low_freq_boost=1.2,
+                         mid_freq_start=30, lowcut=8, highcut=120, filter_order=3):
         """
         Main method to enhance seismic bandwidth
         """
@@ -383,14 +394,24 @@ class SeismicBandwidthEnhancer:
         
         start_time = time.time()
         
-        # Apply selected enhancement method
-        if method == 'spectral_blueing':
-            self.enhanced_data = self.spectral_blueing(self.original_data, **kwargs)
+        # Apply spectral blueing with correct parameters
+        st.info("Starting spectral blueing...")
+        self.enhanced_data = self.spectral_blueing(
+            self.original_data, 
+            target_freq=target_freq,
+            enhancement_factor=enhancement_factor,
+            low_freq_boost=low_freq_boost,
+            mid_freq_range=(mid_freq_start, target_freq)
+        )
         
-        # Apply final bandpass filter to remove artifacts
-        self.enhanced_data = self.bandpass_filter(self.enhanced_data, 
-                                                kwargs.get('lowcut', 8), 
-                                                kwargs.get('highcut', 120))
+        # Apply bandpass filter with correct parameters
+        st.info("Applying bandpass filter...")
+        self.enhanced_data = self.bandpass_filter(
+            self.enhanced_data, 
+            lowcut=lowcut,
+            highcut=highcut,
+            order=filter_order
+        )
         
         processing_time = time.time() - start_time
         st.success(f"Processing completed in {processing_time:.2f} seconds")
@@ -520,16 +541,16 @@ def main():
             # Process button
             if st.button("🚀 Process Seismic Data", type="primary"):
                 with st.spinner("Processing seismic data..."):
-                    # Enhance bandwidth
+                    # Enhance bandwidth with explicit parameters
                     enhanced_data = enhancer.enhance_bandwidth(
                         temp_filename,
-                        method='spectral_blueing',
                         target_freq=target_freq,
                         enhancement_factor=enhancement_factor,
                         low_freq_boost=low_freq_boost,
-                        mid_freq_range=(mid_freq_start, target_freq),
+                        mid_freq_start=mid_freq_start,
                         lowcut=lowcut,
-                        highcut=highcut
+                        highcut=highcut,
+                        filter_order=filter_order
                     )
                 
                 st.success("✅ Processing completed!")
@@ -539,7 +560,7 @@ def main():
                     "📈 Trace Comparison", 
                     "🖼️ Seismic Section", 
                     "📊 Frequency Analysis",
-                    "💾 Download Results"
+                    "📋 Data Statistics"
                 ])
                 
                 with tab1:
@@ -567,17 +588,7 @@ def main():
                         st.pyplot(fig_freq)
                 
                 with tab4:
-                    st.header("Download Enhanced Data")
-                    st.info("Enhanced data can be downloaded in SEG-Y format")
-                    
-                    # Create download button for enhanced data
-                    # Note: In a real application, you'd want to save to a temporary file
-                    # and provide download link. This is a placeholder.
-                    st.warning("""
-                    **Note:** Full SEG-Y writing functionality requires additional setup 
-                    for file handling in Streamlit cloud environment. 
-                    For local deployment, the enhanced data is available in the session state.
-                    """)
+                    st.header("Data Statistics")
                     
                     # Display data statistics
                     col1, col2, col3 = st.columns(3)
@@ -590,6 +601,19 @@ def main():
                     with col3:
                         st.metric("Original Std", f"{np.std(enhancer.original_data):.3f}")
                         st.metric("Enhanced Std", f"{np.std(enhanced_data):.3f}")
+                    
+                    # Additional statistics
+                    st.subheader("Additional Information")
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        st.write("**Original Data Shape:**", enhancer.original_data.shape)
+                        st.write("**Sample Rate:**", f"{enhancer.sample_rate} ms")
+                    with col2:
+                        st.write("**Enhanced Data Shape:**", enhanced_data.shape)
+                        st.write("**Processing Parameters:**")
+                        st.write(f"- Target Frequency: {target_freq} Hz")
+                        st.write(f"- Enhancement Factor: {enhancement_factor}x")
+                        st.write(f"- Filter Range: {lowcut}-{highcut} Hz")
         
         except Exception as e:
             st.error(f"Error processing file: {e}")
@@ -620,33 +644,12 @@ def main():
         2. Adjust enhancement parameters based on your data characteristics
         3. Click 'Process Seismic Data' to run the enhancement
         4. Review the results in the various visualization tabs
-        5. Download the enhanced data (in local deployments)
         
         ### Parameter Guidelines:
         - **Target Frequency**: Typically 60-80 Hz for most seismic data
         - **Enhancement Factor**: 1.5-2.0 for moderate enhancement
         - **Filter Range**: 8-120 Hz works well for most land/marine data
         """)
-        
-        # Display example parameter sets
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.subheader("🟢 Conservative")
-            st.write("Target: 60 Hz")
-            st.write("Boost: 1.5x")
-            st.write("Filter: 10-100 Hz")
-        
-        with col2:
-            st.subheader("🟡 Moderate")
-            st.write("Target: 80 Hz")
-            st.write("Boost: 1.8x")
-            st.write("Filter: 8-120 Hz")
-        
-        with col3:
-            st.subheader("🔴 Aggressive")
-            st.write("Target: 100 Hz")
-            st.write("Boost: 2.2x")
-            st.write("Filter: 5-150 Hz")
 
 if __name__ == "__main__":
     main()
