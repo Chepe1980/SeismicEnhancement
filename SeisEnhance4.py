@@ -131,9 +131,8 @@ class SeismicBandwidthEnhancer:
             
             st.info(f"Alternative read - Shape: {data.shape}")
             return data
-            
-    
-        def write_segy(self, data, original_filename, output_filename):
+
+    def write_segy(self, data, original_filename, output_filename):
         """Write enhanced data back to SEG-Y file"""
         try:
             # Ensure output directory exists
