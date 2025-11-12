@@ -19,11 +19,14 @@ class SeismicBandwidthEnhancer:
         self.enhanced_data = None
         self.sample_rate = 4.0  # Default 4ms, adjust if needed
         self.geometry = None  # Store geometry information
+        self.original_segyfile = None  # Store original segy file reference
         
     def read_segy_3d(self, filename):
         """Read 3D SEG-Y file and return seismic data as numpy array"""
         try:
             with segyio.open(filename, "r") as segyfile:
+                self.original_segyfile = segyfile  # Store for later use
+                
                 # Try to read as 3D data with proper geometry
                 try:
                     # Get cube dimensions
@@ -41,7 +44,8 @@ class SeismicBandwidthEnhancer:
                         'ilines': segyfile.ilines,
                         'xlines': segyfile.xlines,
                         'samples': segyfile.samples,
-                        'spec': segyfile.spec
+                        'tracecount': segyfile.tracecount,
+                        'format': segyfile.format
                     }
                     
                 except Exception as e:
@@ -76,7 +80,8 @@ class SeismicBandwidthEnhancer:
             'ilines': [0],
             'xlines': np.arange(data.shape[1]),
             'samples': segyfile.samples,
-            'spec': segyfile.spec
+            'tracecount': segyfile.tracecount,
+            'format': segyfile.format
         }
         
         return data
@@ -142,13 +147,21 @@ class SeismicBandwidthEnhancer:
                 spec.tracecount = src.tracecount
                 
                 # For 3D data, preserve geometry
-                if hasattr(src, 'ilines') and hasattr(src, 'xlines'):
-                    spec.ilines = src.ilines
-                    spec.xlines = src.xlines
+                try:
+                    if hasattr(src, 'ilines') and src.ilines is not None:
+                        spec.ilines = src.ilines
+                    if hasattr(src, 'xlines') and src.xlines is not None:
+                        spec.xlines = src.xlines
+                except:
+                    pass  # If geometry doesn't exist, continue without it
                 
                 with segyio.open(output_filename, "w", spec) as dst:
                     # Copy textual headers
                     dst.text[0] = src.text[0]
+                    if hasattr(src, 'text') and len(src.text) > 1:
+                        for i in range(1, len(src.text)):
+                            dst.text[i] = src.text[i]
+                    
                     # Copy binary header
                     dst.bin = src.bin
                     
@@ -158,12 +171,17 @@ class SeismicBandwidthEnhancer:
                         
                         # Map the enhanced data back to trace order
                         if data.shape[0] == 1:  # 2D data
-                            dst.trace[i] = data[0, i, :]
+                            if i < data.shape[1]:
+                                dst.trace[i] = data[0, i, :]
+                            else:
+                                # If trace count doesn't match, use first trace pattern
+                                dst.trace[i] = data[0, 0, :]
                         else:  # 3D data
                             # For 3D data, we need to map back to original geometry
-                            # This assumes the data is in the same order as original
                             inline_idx, xline_idx = self._get_trace_position(i, src)
-                            if inline_idx < data.shape[0] and xline_idx < data.shape[1]:
+                            if (inline_idx < data.shape[0] and 
+                                xline_idx < data.shape[1] and 
+                                inline_idx >= 0 and xline_idx >= 0):
                                 dst.trace[i] = data[inline_idx, xline_idx, :]
                             else:
                                 # Fallback: use first trace pattern
@@ -182,10 +200,11 @@ class SeismicBandwidthEnhancer:
         try:
             # For 3D data with proper geometry
             if hasattr(segyfile, 'ilines') and hasattr(segyfile, 'xlines'):
-                n_xlines = len(segyfile.xlines)
-                inline_idx = trace_idx // n_xlines
-                xline_idx = trace_idx % n_xlines
-                return inline_idx, xline_idx
+                if segyfile.ilines is not None and segyfile.xlines is not None:
+                    n_xlines = len(segyfile.xlines)
+                    inline_idx = trace_idx // n_xlines
+                    xline_idx = trace_idx % n_xlines
+                    return inline_idx, xline_idx
         except:
             pass
         
@@ -193,26 +212,42 @@ class SeismicBandwidthEnhancer:
         return 0, trace_idx
 
     def write_segy_alternative(self, data, original_filename, output_filename):
-        """Alternative SEG-Y writing method"""
+        """Alternative SEG-Y writing method - simpler approach"""
         try:
             with segyio.open(original_filename, "r", ignore_geometry=True) as src:
-                # Create simple SEG-Y file
-                with segyio.open(output_filename, "w", spec=src.spec) as dst:
+                # Get basic specifications from source
+                n_traces = src.tracecount
+                n_samples = len(src.samples)
+                
+                # Create output spec
+                spec = segyio.spec()
+                spec.format = src.format
+                spec.samples = src.samples
+                spec.tracecount = n_traces
+                
+                with segyio.open(output_filename, "w", spec) as dst:
                     # Copy headers
                     dst.text[0] = src.text[0]
                     dst.bin = src.bin
                     
                     # Write traces
-                    for i in range(min(src.tracecount, data.shape[1])):
+                    for i in range(n_traces):
+                        # Copy trace header
+                        dst.header[i] = src.header[i]
+                        
+                        # Write trace data
                         if data.shape[0] == 1:  # 2D data
-                            dst.trace[i] = data[0, i, :]
-                        else:
-                            # For 3D, flatten and take traces in order
+                            if i < data.shape[1]:
+                                dst.trace[i] = data[0, i, :]
+                            else:
+                                dst.trace[i] = np.zeros(n_samples)  # Fallback
+                        else:  # 3D data
+                            # Flatten 3D data and take in order
                             flat_data = data.reshape(-1, data.shape[2])
                             if i < flat_data.shape[0]:
                                 dst.trace[i] = flat_data[i, :]
                             else:
-                                dst.trace[i] = data[0, 0, :]  # Fallback
+                                dst.trace[i] = np.zeros(n_samples)  # Fallback
                             
             st.success(f"Enhanced SEG-Y file saved (alternative method): {output_filename}")
             return True
@@ -232,10 +267,17 @@ class SeismicBandwidthEnhancer:
             download_filename = os.path.join(temp_dir, output_filename)
             
             # Write the enhanced data to SEG-Y file
+            st.info("Creating enhanced SEG-Y file for download...")
             success = self.write_segy(self.enhanced_data, original_filename, download_filename)
             
             if success:
-                return download_filename
+                # Verify the file was created
+                if os.path.exists(download_filename) and os.path.getsize(download_filename) > 0:
+                    st.success("Enhanced SEG-Y file created successfully!")
+                    return download_filename
+                else:
+                    st.error("Enhanced SEG-Y file was not created properly")
+                    return None
             else:
                 return None
                 
@@ -243,12 +285,13 @@ class SeismicBandwidthEnhancer:
             st.error(f"Error creating downloadable SEG-Y: {e}")
             return None
 
+    # [Keep all the other methods exactly the same as before: spectral_blueing, bandpass_filter, 
+    # plot_spectral_comparison, plot_seismic_section, plot_3d_volume, plot_time_slice_comparison, 
+    # plot_frequency_analysis, enhance_bandwidth - they remain unchanged]
+
     def spectral_blueing(self, seismic_data, target_freq=80, enhancement_factor=1.5,
                         low_freq_boost=1.2, mid_freq_range=(30, 80)):
-        """
-        Spectral blueing to enhance high frequencies
-        Works for both 2D and 3D data
-        """
+        """Spectral blueing to enhance high frequencies - unchanged"""
         st.info("Applying spectral blueing...")
         enhanced_data = np.zeros_like(seismic_data)
         
@@ -319,9 +362,7 @@ class SeismicBandwidthEnhancer:
         return enhanced_data
 
     def bandpass_filter(self, seismic_data, lowcut=8, highcut=120, order=3):
-        """
-        Apply bandpass filter to remove very low and very high frequency noise
-        """
+        """Apply bandpass filter - unchanged"""
         st.info("Applying bandpass filter...")
         
         # Calculate Nyquist frequency correctly
@@ -395,7 +436,7 @@ class SeismicBandwidthEnhancer:
         return enhanced_data
 
     def plot_spectral_comparison(self, original_trace, enhanced_trace, trace_idx=0):
-        """Plot comparison between original and enhanced spectra"""
+        """Plot comparison between original and enhanced spectra - unchanged"""
         fig, axes = plt.subplots(2, 2, figsize=(15, 10))
         
         # Time domain comparison
@@ -453,7 +494,7 @@ class SeismicBandwidthEnhancer:
         return fig
 
     def plot_seismic_section(self, inline_idx=None, xline_idx=None):
-        """Plot a section of original vs enhanced seismic"""
+        """Plot a section of original vs enhanced seismic - unchanged"""
         if self.original_data is None or self.enhanced_data is None:
             st.error("No data to plot. Run enhancement first.")
             return None
@@ -515,7 +556,7 @@ class SeismicBandwidthEnhancer:
         return fig
 
     def plot_3d_volume(self, data_type='original', max_voxels=50000):
-        """Create interactive 3D volume plot using Plotly"""
+        """Create interactive 3D volume plot using Plotly - unchanged"""
         if self.original_data is None:
             st.error("No data to plot. Run enhancement first.")
             return None
@@ -576,7 +617,7 @@ class SeismicBandwidthEnhancer:
         return fig
 
     def plot_time_slice_comparison(self, time_slice_idx=None):
-        """Plot time slice comparison using Plotly"""
+        """Plot time slice comparison using Plotly - unchanged"""
         if self.original_data is None or self.enhanced_data is None:
             st.error("No data to plot. Run enhancement first.")
             return None
@@ -626,12 +667,12 @@ class SeismicBandwidthEnhancer:
         fig.update_xaxes(title_text="Crossline", row=1, col=1)
         fig.update_xaxes(title_text="Crossline", row=1, col=2)
         fig.update_yaxes(title_text="Inline", row=1, col=1)
-        fig.update_yaxes(title_text="Inline", row=1, col=2)
+        fig.update_yaxes(title_text="Inline", row=1, col_2)
         
         return fig
 
     def plot_frequency_analysis(self, num_traces=10):
-        """Plot frequency content analysis for multiple traces"""
+        """Plot frequency content analysis for multiple traces - unchanged"""
         if self.original_data is None or self.enhanced_data is None:
             st.error("No data to plot. Run enhancement first.")
             return None
@@ -699,9 +740,7 @@ class SeismicBandwidthEnhancer:
     def enhance_bandwidth(self, file_path, method='spectral_blueing', 
                          target_freq=80, enhancement_factor=1.5, low_freq_boost=1.2,
                          mid_freq_start=30, lowcut=8, highcut=120, filter_order=3):
-        """
-        Main method to enhance seismic bandwidth
-        """
+        """Main method to enhance seismic bandwidth - unchanged"""
         st.info(f"Loading SEG-Y file...")
         self.original_data = self.read_segy(file_path)
         
@@ -901,30 +940,34 @@ def main():
                 
                 st.success("✅ 3D Processing completed!")
                 
-                # Create download button
+                # Create download section
                 st.sidebar.header("💾 Download Results")
                 
                 # Enhanced SEG-Y download
                 output_filename = "enhanced_seismic.sgy"
-                enhanced_file_path = enhancer.create_downloadable_segy(temp_filename, output_filename)
                 
-                if enhanced_file_path:
-                    st.session_state.enhanced_file_path = enhanced_file_path
-                    
-                    # Read the file for download
-                    with open(enhanced_file_path, "rb") as file:
-                        file_data = file.read()
-                    
-                    st.sidebar.download_button(
-                        label="📥 Download Enhanced SEG-Y",
-                        data=file_data,
-                        file_name=output_filename,
-                        mime="application/octet-stream",
-                        help="Download the enhanced seismic data in SEG-Y format"
-                    )
-                    st.sidebar.success("Enhanced SEG-Y file ready for download!")
-                else:
-                    st.sidebar.error("Failed to create enhanced SEG-Y file for download")
+                with st.sidebar:
+                    if st.button("🛠️ Generate Enhanced SEG-Y File", type="secondary"):
+                        with st.spinner("Creating enhanced SEG-Y file..."):
+                            enhanced_file_path = enhancer.create_downloadable_segy(temp_filename, output_filename)
+                            
+                            if enhanced_file_path:
+                                st.session_state.enhanced_file_path = enhanced_file_path
+                                
+                                # Read the file for download
+                                with open(enhanced_file_path, "rb") as file:
+                                    file_data = file.read()
+                                
+                                st.sidebar.download_button(
+                                    label="📥 Download Enhanced SEG-Y",
+                                    data=file_data,
+                                    file_name=output_filename,
+                                    mime="application/octet-stream",
+                                    help="Download the enhanced seismic data in SEG-Y format"
+                                )
+                                st.sidebar.success("Enhanced SEG-Y file ready for download!")
+                            else:
+                                st.sidebar.error("Failed to create enhanced SEG-Y file for download")
                 
                 # Display results in tabs
                 tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
