@@ -673,7 +673,8 @@ class SeismicBandwidthEnhancer:
 
     
     
-       def plot_frequency_analysis(self, num_traces=10):
+       
+        def plot_frequency_analysis(self, num_traces=10):
         """Plot frequency content analysis for multiple traces"""
         if self.original_data is None or self.enhanced_data is None:
             st.error("No data to plot. Run enhancement first.")
@@ -689,37 +690,48 @@ class SeismicBandwidthEnhancer:
             j = np.random.randint(0, n_xlines)
             trace_indices.append((i, j))
         
-        # Calculate average frequency spectra - use dynamic array sizes
+        # Calculate average frequency spectra
         freqs = fftfreq(n_samples, d=self.sample_rate/1000.0)
         positive_freqs = freqs > 0
         
-        # Get the actual length from the first trace to avoid size mismatches
-        first_orig_trace = self.original_data[0, 0, :]
-        first_orig_fft = np.abs(fft(first_orig_trace))[positive_freqs]
-        spectrum_length = len(first_orig_fft)
+        # Determine the exact length for positive frequencies
+        # For even n_samples: length = n_samples // 2
+        # For odd n_samples: length = (n_samples + 1) // 2
+        spectrum_length = len(freqs[positive_freqs])
         
         avg_orig_spectrum = np.zeros(spectrum_length)
         avg_enh_spectrum = np.zeros(spectrum_length)
         
+        valid_traces = 0
         for i, j in trace_indices:
-            orig_trace = self.original_data[i, j, :]
-            enh_trace = self.enhanced_data[i, j, :]
-            
-            orig_fft = np.abs(fft(orig_trace))[positive_freqs]
-            enh_fft = np.abs(fft(enh_trace))[positive_freqs]
-            
-            # Ensure all FFT results have the same length
-            min_len = min(len(orig_fft), len(avg_orig_spectrum), len(enh_fft), len(avg_enh_spectrum))
-            
-            avg_orig_spectrum[:min_len] += orig_fft[:min_len]
-            avg_enh_spectrum[:min_len] += enh_fft[:min_len]
+            try:
+                orig_trace = self.original_data[i, j, :]
+                enh_trace = self.enhanced_data[i, j, :]
+                
+                orig_fft = np.abs(fft(orig_trace))[positive_freqs]
+                enh_fft = np.abs(fft(enh_trace))[positive_freqs]
+                
+                # Ensure we have the correct length
+                if len(orig_fft) == spectrum_length and len(enh_fft) == spectrum_length:
+                    avg_orig_spectrum += orig_fft
+                    avg_enh_spectrum += enh_fft
+                    valid_traces += 1
+                else:
+                    st.warning(f"Trace ({i},{j}) has unexpected FFT length. Skipping.")
+                    
+            except Exception as e:
+                st.warning(f"Error processing trace ({i},{j}): {e}")
+                continue
+        
+        if valid_traces == 0:
+            st.error("No valid traces found for frequency analysis.")
+            return fig
         
         # Calculate averages
-        valid_length = min(len(avg_orig_spectrum), len(avg_enh_spectrum))
-        avg_orig_spectrum = avg_orig_spectrum[:valid_length] / len(trace_indices)
-        avg_enh_spectrum = avg_enh_spectrum[:valid_length] / len(trace_indices)
+        avg_orig_spectrum /= valid_traces
+        avg_enh_spectrum /= valid_traces
         
-        plot_freqs = freqs[positive_freqs][:valid_length]
+        plot_freqs = freqs[positive_freqs]
         max_freq = 150  # Show up to 150 Hz
         
         valid_freqs = plot_freqs <= max_freq
@@ -747,7 +759,8 @@ class SeismicBandwidthEnhancer:
         ax2.grid(True, alpha=0.3)
         
         plt.tight_layout()
-        return fig 
+        return fig
+    
     
     
     
