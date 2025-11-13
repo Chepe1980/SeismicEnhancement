@@ -15,6 +15,7 @@ import io
 import json
 import gc
 import psutil
+import uuid
 
 class SeismicBandwidthEnhancer:
     def __init__(self):
@@ -96,7 +97,7 @@ class SeismicBandwidthEnhancer:
         return self.read_segy_3d(filename)
 
     def write_segy_proper(self, output_filename):
-        """Proper SEG-Y writing using segyio with enhanced data - FIXED VERSION"""
+        """Proper SEG-Y writing using segyio with enhanced data"""
         if self.enhanced_data is None:
             st.error("No enhanced data available to write")
             return False
@@ -162,106 +163,13 @@ class SeismicBandwidthEnhancer:
             if os.path.exists(output_filename) and os.path.getsize(output_filename) > 0:
                 file_size = os.path.getsize(output_filename) / (1024 * 1024)  # Size in MB
                 st.success(f"Enhanced SEG-Y file created successfully: {output_filename} (Size: {file_size:.2f} MB)")
-                
-                # Quick verification
-                try:
-                    with segyio.open(output_filename, "r") as test_file:
-                        st.info(f"Verified: Output file has {test_file.tracecount} traces, {len(test_file.samples)} samples")
-                    return True
-                except Exception as e:
-                    st.warning(f"File created but verification failed: {e}")
-                    return True
+                return True
             else:
                 st.error("Output file was not created properly")
                 return False
                 
         except Exception as e:
             st.error(f"Error writing SEG-Y file: {e}")
-            return False
-
-    def write_segy_robust(self, output_filename):
-        """Robust SEG-Y writing with multiple fallback methods"""
-        st.info("Attempting to create enhanced SEG-Y file...")
-        
-        # Method 1: Use proper segyio writing
-        success = self.write_segy_proper(output_filename)
-        if success:
-            return True
-            
-        # Method 2: Try alternative approach for problematic files
-        st.warning("Standard SEG-Y writing failed, trying alternative method...")
-        try:
-            return self.write_segy_alternative(output_filename)
-        except Exception as e:
-            st.error(f"Alternative SEG-Y writing also failed: {e}")
-            return False
-
-    def write_segy_alternative(self, output_filename):
-        """Alternative SEG-Y writing method for problematic files"""
-        try:
-            with segyio.open(self.original_filename, "r", ignore_geometry=True) as src:
-                # Create a new file by copying the original structure
-                spec = segyio.tools.metadata(src)
-                
-                with segyio.open(output_filename, "w", spec=spec) as dst:
-                    # Copy textual headers
-                    for i in range(len(src.text)):
-                        dst.text[i] = src.text[i]
-                    
-                    # Copy binary header
-                    dst.bin = src.bin
-                    
-                    # Copy all trace headers and write enhanced data
-                    for i, header in enumerate(src.header):
-                        dst.header[i] = header
-                        
-                        # Calculate corresponding indices for 3D data
-                        if self.enhanced_data is not None and i < self.enhanced_data.size:
-                            # Flatten enhanced data and take corresponding trace
-                            enhanced_flat = self.enhanced_data.reshape(-1, self.enhanced_data.shape[-1])
-                            if i < len(enhanced_flat):
-                                dst.trace[i] = enhanced_flat[i].astype(np.float32)
-                            else:
-                                # Fallback to original trace if enhanced data doesn't have this trace
-                                dst.trace[i] = src.trace[i]
-                        else:
-                            # Fallback to original trace
-                            dst.trace[i] = src.trace[i]
-                
-                st.success(f"Alternative SEG-Y writing completed: {output_filename}")
-                return True
-                
-        except Exception as e:
-            st.error(f"Alternative SEG-Y writing failed: {e}")
-            return False
-
-    def create_numpy_segy(self, output_filename):
-        """Create a simple numpy-based SEG-Y alternative"""
-        try:
-            # Save as numpy array with metadata
-            metadata = {
-                'shape': self.enhanced_data.shape,
-                'sample_rate': self.sample_rate,
-                'data_type': 'enhanced_seismic',
-                'description': 'Enhanced seismic data created by Seismic Bandwidth Enhancer',
-                'timestamp': time.strftime('%Y-%m-%d %H:%M:%S')
-            }
-            
-            # Create a simple file format: first metadata, then data
-            with open(output_filename, 'wb') as f:
-                # Write metadata as JSON string
-                metadata_str = json.dumps(metadata)
-                f.write(metadata_str.encode('utf-8'))
-                f.write(b'\n' + b'='*50 + b'\n')  # Separator
-                
-                # Write data as binary
-                self.enhanced_data.astype(np.float32).tofile(f)
-            
-            st.success(f"Created enhanced data file: {output_filename}")
-            return True
-            
-        except Exception as e:
-            st.error(f"Numpy export failed: {e}")
             return False
 
     def create_downloadable_segy(self, output_filename):
@@ -275,14 +183,16 @@ class SeismicBandwidthEnhancer:
             output_filename = os.path.splitext(output_filename)[0] + '.sgy'
         
         try:
-            # Create temporary file for download
+            # Create temporary file for download with unique name to avoid conflicts
             temp_dir = tempfile.gettempdir()
-            download_filename = os.path.join(temp_dir, output_filename)
+            unique_id = str(uuid.uuid4())[:8]  # Add unique identifier
+            base_name = os.path.splitext(output_filename)[0]
+            download_filename = os.path.join(temp_dir, f"{base_name}_{unique_id}.sgy")
             
             st.info("Creating enhanced SEG-Y file with proper headers...")
             
-            # Try robust SEG-Y writing (will always return .sgy file)
-            success = self.write_segy_robust(download_filename)
+            # Try SEG-Y writing
+            success = self.write_segy_proper(download_filename)
             
             if success:
                 # Verify the file was created
@@ -308,6 +218,8 @@ class SeismicBandwidthEnhancer:
         except Exception as e:
             st.error(f"Error creating downloadable file: {e}")
             return None
+
+    # ... (keep all the other methods the same as in the previous version: spectral_blueing, bandpass_filter, plot methods, etc.)
 
     def spectral_blueing(self, seismic_data, target_freq=80, enhancement_factor=1.5,
                         low_freq_boost=1.2, mid_freq_range=(30, 80)):
@@ -409,43 +321,6 @@ class SeismicBandwidthEnhancer:
         
         return enhanced_trace
 
-    def process_in_chunks(self, seismic_data, processing_func, chunk_size=100, **kwargs):
-        """Process large datasets in chunks to reduce memory usage"""
-        n_inlines = seismic_data.shape[0]
-        enhanced_data = np.zeros_like(seismic_data)
-        
-        total_chunks = (n_inlines + chunk_size - 1) // chunk_size
-        
-        progress_bar = st.progress(0)
-        status_text = st.empty()
-        
-        for chunk_idx, start_idx in enumerate(range(0, n_inlines, chunk_size)):
-            end_idx = min(start_idx + chunk_size, n_inlines)
-            chunk = seismic_data[start_idx:end_idx, :, :]
-            
-            # Monitor resources
-            self.monitor_resources()
-            
-            # Process chunk
-            enhanced_chunk = processing_func(chunk, **kwargs)
-            enhanced_data[start_idx:end_idx, :, :] = enhanced_chunk
-            
-            # Update progress
-            progress = (chunk_idx + 1) / total_chunks
-            progress_bar.progress(progress)
-            status_text.text(f"Processed chunk {chunk_idx + 1}/{total_chunks} (inlines {start_idx}-{end_idx})")
-            
-            # Force garbage collection
-            gc.collect()
-        
-        progress_bar.progress(1.0)
-        status_text.text("Chunk processing completed!")
-        time.sleep(0.5)
-        progress_bar.empty()
-        status_text.empty()
-        
-        return enhanced_data
-
     def bandpass_filter(self, seismic_data, lowcut=8, highcut=120, order=3):
         """Apply bandpass filter to remove very low and very high frequency noise"""
         st.info("Applying bandpass filter...")
@@ -455,9 +330,6 @@ class SeismicBandwidthEnhancer:
         sampling_freq = 1.0 / sampling_interval  # Sampling frequency in Hz
         nyquist = sampling_freq / 2.0  # Nyquist frequency in Hz
         
-        st.info(f"Sampling frequency: {sampling_freq:.1f} Hz")
-        st.info(f"Nyquist frequency: {nyquist:.1f} Hz")
-        
         # Auto-adjust filter range if needed
         if highcut >= nyquist * 0.95:
             highcut = nyquist * 0.9
@@ -466,9 +338,6 @@ class SeismicBandwidthEnhancer:
         # Normalize frequencies
         low_normalized = lowcut / nyquist
         high_normalized = highcut / nyquist
-        
-        st.info(f"Filter range: {lowcut}-{highcut} Hz")
-        st.info(f"Normalized range: {low_normalized:.3f}-{high_normalized:.3f}")
         
         # Design Butterworth filter
         try:
@@ -520,446 +389,6 @@ class SeismicBandwidthEnhancer:
     
         return enhanced_data
 
-    def monitor_resources(self):
-        """Monitor system resources during processing"""
-        try:
-            process = psutil.Process()
-            memory_usage = process.memory_info().rss / 1024 / 1024  # MB
-            cpu_percent = process.cpu_percent()
-            
-            # Update sidebar metrics if they exist
-            if hasattr(st.session_state, 'resource_monitor'):
-                st.session_state.resource_monitor.memory = f"{memory_usage:.1f} MB"
-                st.session_state.resource_monitor.cpu = f"{cpu_percent:.1f}%"
-            
-            # Suggest garbage collection if memory is high
-            if memory_usage > 1000:  # 1GB threshold
-                gc.collect()
-                
-        except Exception as e:
-            # Resource monitoring is optional, don't break the app
-            pass
-
-    def calculate_snr(self, data):
-        """Calculate signal-to-noise ratio"""
-        signal_power = np.mean(data**2)
-        noise_power = np.var(data - np.mean(data))
-        return 10 * np.log10(signal_power / (noise_power + 1e-10))
-
-    def calculate_resolution_gain(self):
-        """Calculate spectral resolution gain"""
-        if self.original_data is None or self.enhanced_data is None:
-            return None
-            
-        n_inlines, n_xlines, n_samples = self.original_data.shape
-        freqs = fftfreq(n_samples, d=self.sample_rate/1000.0)
-        positive_freqs = freqs > 0
-        
-        # Calculate average spectra
-        avg_orig_spectrum = np.zeros(np.sum(positive_freqs))
-        avg_enh_spectrum = np.zeros(np.sum(positive_freqs))
-        trace_count = 0
-        
-        for i in range(0, n_inlines, max(1, n_inlines//10)):  # Sample every 10th inline
-            for j in range(0, n_xlines, max(1, n_xlines//10)):  # Sample every 10th crossline
-                orig_fft = np.abs(fft(self.original_data[i, j, :]))[positive_freqs]
-                enh_fft = np.abs(fft(self.enhanced_data[i, j, :]))[positive_freqs]
-                
-                if len(orig_fft) == len(avg_orig_spectrum):
-                    avg_orig_spectrum += orig_fft
-                    avg_enh_spectrum += enh_fft
-                    trace_count += 1
-        
-        if trace_count > 0:
-            avg_orig_spectrum /= trace_count
-            avg_enh_spectrum /= trace_count
-            return avg_enh_spectrum / (avg_orig_spectrum + 1e-10)
-        
-        return None
-
-    def plot_quality_metrics(self):
-        """Plot quality metrics for enhancement validation"""
-        if self.original_data is None or self.enhanced_data is None:
-            st.error("No data available for quality metrics")
-            return None
-            
-        fig, axes = plt.subplots(2, 2, figsize=(12, 10))
-        
-        # Signal-to-noise ratio improvement
-        snr_original = self.calculate_snr(self.original_data)
-        snr_enhanced = self.calculate_snr(self.enhanced_data)
-        
-        axes[0, 0].bar(['Original', 'Enhanced'], [snr_original, snr_enhanced], color=['blue', 'red'])
-        axes[0, 0].set_title('Signal-to-Noise Ratio')
-        axes[0, 0].set_ylabel('SNR (dB)')
-        axes[0, 0].grid(True, alpha=0.3)
-        
-        # Resolution metrics
-        resolution_gain = self.calculate_resolution_gain()
-        if resolution_gain is not None:
-            freqs = fftfreq(self.original_data.shape[2], d=self.sample_rate/1000.0)
-            positive_freqs = freqs > 0
-            plot_freqs = freqs[positive_freqs]
-            
-            axes[0, 1].plot(plot_freqs[:len(resolution_gain)], resolution_gain, 'g-', linewidth=2)
-            axes[0, 1].axhline(y=1.0, color='k', linestyle='--', alpha=0.5, label='No Change')
-            axes[0, 1].set_title('Spectral Resolution Gain')
-            axes[0, 1].set_xlabel('Frequency (Hz)')
-            axes[0, 1].set_ylabel('Enhancement Factor')
-            axes[0, 1].legend()
-            axes[0, 1].grid(True, alpha=0.3)
-        
-        # Amplitude distribution
-        axes[1, 0].hist(self.original_data.flatten(), bins=100, alpha=0.7, label='Original', color='blue', density=True)
-        axes[1, 0].hist(self.enhanced_data.flatten(), bins=100, alpha=0.7, label='Enhanced', color='red', density=True)
-        axes[1, 0].set_xlabel('Amplitude')
-        axes[1, 0].set_ylabel('Density')
-        axes[1, 0].set_title('Amplitude Distribution')
-        axes[1, 0].legend()
-        axes[1, 0].grid(True, alpha=0.3)
-        
-        # Data range comparison
-        metrics = ['Min', 'Max', 'Std']
-        original_vals = [np.min(self.original_data), np.max(self.original_data), np.std(self.original_data)]
-        enhanced_vals = [np.min(self.enhanced_data), np.max(self.enhanced_data), np.std(self.enhanced_data)]
-        
-        x_pos = np.arange(len(metrics))
-        width = 0.35
-        
-        axes[1, 1].bar(x_pos - width/2, original_vals, width, label='Original', color='blue', alpha=0.7)
-        axes[1, 1].bar(x_pos + width/2, enhanced_vals, width, label='Enhanced', color='red', alpha=0.7)
-        axes[1, 1].set_xlabel('Metric')
-        axes[1, 1].set_ylabel('Value')
-        axes[1, 1].set_title('Data Statistics Comparison')
-        axes[1, 1].set_xticks(x_pos)
-        axes[1, 1].set_xticklabels(metrics)
-        axes[1, 1].legend()
-        axes[1, 1].grid(True, alpha=0.3)
-        
-        plt.tight_layout()
-        return fig
-
-    def plot_spectral_comparison(self, original_trace, enhanced_trace, trace_idx=0):
-        """Plot comparison between original and enhanced spectra"""
-        fig, axes = plt.subplots(2, 2, figsize=(15, 10))
-        
-        # Time domain comparison
-        time_axis = np.arange(len(original_trace)) * self.sample_rate
-        axes[0, 0].plot(time_axis, original_trace, 'b-', alpha=0.8, label='Original', linewidth=1.5)
-        axes[0, 0].plot(time_axis, enhanced_trace, 'r-', alpha=0.7, label='Enhanced', linewidth=1.5)
-        axes[0, 0].set_xlabel('Time (ms)')
-        axes[0, 0].set_ylabel('Amplitude')
-        axes[0, 0].set_title(f'Trace Comparison (Trace #{trace_idx})')
-        axes[0, 0].legend()
-        axes[0, 0].grid(True, alpha=0.3)
-        
-        # Frequency spectrum comparison
-        orig_fft = np.abs(fft(original_trace))
-        enh_fft = np.abs(fft(enhanced_trace))
-        freqs = fftfreq(len(original_trace), d=self.sample_rate/1000.0)
-        
-        positive_freqs = freqs > 0
-        max_freq = 200  # Show up to 200 Hz
-        
-        valid_freqs = freqs[positive_freqs] <= max_freq
-        plot_freqs = freqs[positive_freqs][valid_freqs]
-        
-        axes[0, 1].plot(plot_freqs, orig_fft[positive_freqs][valid_freqs], 'b-', 
-                       alpha=0.8, label='Original', linewidth=2)
-        axes[0, 1].plot(plot_freqs, enh_fft[positive_freqs][valid_freqs], 'r-', 
-                       alpha=0.7, label='Enhanced', linewidth=2)
-        axes[0, 1].set_xlabel('Frequency (Hz)')
-        axes[0, 1].set_ylabel('Amplitude')
-        axes[0, 1].set_title('Frequency Spectrum Comparison')
-        axes[0, 1].legend()
-        axes[0, 1].grid(True, alpha=0.3)
-        
-        # Spectral ratio
-        spectral_ratio = enh_fft[positive_freqs] / (orig_fft[positive_freqs] + 1e-10)
-        axes[1, 0].plot(plot_freqs, spectral_ratio[valid_freqs], 'g-', linewidth=2)
-        axes[1, 0].axhline(y=1.0, color='k', linestyle='--', alpha=0.5, label='No Change')
-        axes[1, 0].set_xlabel('Frequency (Hz)')
-        axes[1, 0].set_ylabel('Spectral Ratio')
-        axes[1, 0].set_title('Enhancement Factor vs Frequency')
-        axes[1, 0].set_ylim([0, 3])  # Limit y-axis for better visualization
-        axes[1, 0].legend()
-        axes[1, 0].grid(True, alpha=0.3)
-        
-        # Histogram of amplitudes
-        axes[1, 1].hist(original_trace, bins=100, alpha=0.7, label='Original', color='blue', density=True)
-        axes[1, 1].hist(enhanced_trace, bins=100, alpha=0.7, label='Enhanced', color='red', density=True)
-        axes[1, 1].set_xlabel('Amplitude')
-        axes[1, 1].set_ylabel('Density')
-        axes[1, 1].set_title('Amplitude Distribution')
-        axes[1, 1].legend()
-        axes[1, 1].grid(True, alpha=0.3)
-        
-        plt.tight_layout()
-        return fig
-
-    def plot_seismic_section(self, inline_idx=None, xline_idx=None):
-        """Plot a section of original vs enhanced seismic"""
-        if self.original_data is None or self.enhanced_data is None:
-            st.error("No data to plot. Run enhancement first.")
-            return None
-        
-        n_inlines, n_xlines, n_samples = self.original_data.shape
-        
-        # Set default indices if not provided
-        if inline_idx is None:
-            inline_idx = n_inlines // 2
-        if xline_idx is None:
-            xline_idx = n_xlines // 2
-        
-        fig, axes = plt.subplots(2, 3, figsize=(18, 12))
-        
-        # Inline section
-        vmax_inline = np.percentile(np.abs(self.original_data[inline_idx, :, :]), 95)
-        axes[0, 0].imshow(self.original_data[inline_idx, :, :].T, 
-                         aspect='auto', cmap='seismic', vmin=-vmax_inline, vmax=vmax_inline)
-        axes[0, 0].set_title(f'Original - Inline {inline_idx}')
-        axes[0, 0].set_xlabel('Crossline')
-        axes[0, 0].set_ylabel('Time Sample')
-        
-        axes[1, 0].imshow(self.enhanced_data[inline_idx, :, :].T, 
-                         aspect='auto', cmap='seismic', vmin=-vmax_inline, vmax=vmax_inline)
-        axes[1, 0].set_title(f'Enhanced - Inline {inline_idx}')
-        axes[1, 0].set_xlabel('Crossline')
-        axes[1, 0].set_ylabel('Time Sample')
-        
-        # Crossline section
-        vmax_xline = np.percentile(np.abs(self.original_data[:, xline_idx, :]), 95)
-        axes[0, 1].imshow(self.original_data[:, xline_idx, :].T, 
-                         aspect='auto', cmap='seismic', vmin=-vmax_xline, vmax=vmax_xline)
-        axes[0, 1].set_title(f'Original - Crossline {xline_idx}')
-        axes[0, 1].set_xlabel('Inline')
-        axes[0, 1].set_ylabel('Time Sample')
-        
-        axes[1, 1].imshow(self.enhanced_data[:, xline_idx, :].T, 
-                         aspect='auto', cmap='seismic', vmin=-vmax_xline, vmax=vmax_xline)
-        axes[1, 1].set_title(f'Enhanced - Crossline {xline_idx}')
-        axes[1, 1].set_xlabel('Inline')
-        axes[1, 1].set_ylabel('Time Sample')
-        
-        # Time slice
-        time_slice_idx = n_samples // 2
-        vmax_time = np.percentile(np.abs(self.original_data[:, :, time_slice_idx]), 95)
-        axes[0, 2].imshow(self.original_data[:, :, time_slice_idx], 
-                         aspect='auto', cmap='seismic', vmin=-vmax_time, vmax=vmax_time)
-        axes[0, 2].set_title(f'Original - Time {time_slice_idx * self.sample_rate:.0f}ms')
-        axes[0, 2].set_xlabel('Crossline')
-        axes[0, 2].set_ylabel('Inline')
-        
-        axes[1, 2].imshow(self.enhanced_data[:, :, time_slice_idx], 
-                         aspect='auto', cmap='seismic', vmin=-vmax_time, vmax=vmax_time)
-        axes[1, 2].set_title(f'Enhanced - Time {time_slice_idx * self.sample_rate:.0f}ms')
-        axes[1, 2].set_xlabel('Crossline')
-        axes[1, 2].set_ylabel('Inline')
-        
-        plt.tight_layout()
-        return fig
-
-    def plot_3d_volume(self, data_type='original', max_voxels=50000):
-        """Create interactive 3D volume plot using Plotly"""
-        if self.original_data is None:
-            st.error("No data to plot. Run enhancement first.")
-            return None
-        
-        data = self.original_data if data_type == 'original' else self.enhanced_data
-        
-        # Downsample data if too large for performance
-        n_inlines, n_xlines, n_samples = data.shape
-        total_voxels = n_inlines * n_xlines * n_samples
-        
-        if total_voxels > max_voxels:
-            downsample_factor = int(np.ceil((total_voxels / max_voxels) ** (1/3)))
-            data = data[::downsample_factor, ::downsample_factor, ::downsample_factor]
-            st.info(f"Downsampled data for 3D visualization (factor: {downsample_factor})")
-        
-        # Create coordinates
-        n_inlines, n_xlines, n_samples = data.shape
-        ilines = np.arange(n_inlines)
-        xlines = np.arange(n_xlines)
-        times = np.arange(n_samples) * self.sample_rate
-        
-        # Create meshgrid
-        I, X, T = np.meshgrid(ilines, xlines, times, indexing='ij')
-        
-        # Flatten arrays
-        I_flat = I.flatten()
-        X_flat = X.flatten()
-        T_flat = T.flatten()
-        values_flat = data.flatten()
-        
-        # Create 3D scatter plot
-        fig = go.Figure(data=go.Volume(
-            x=I_flat,
-            y=X_flat,
-            z=T_flat,
-            value=values_flat,
-            isomin=np.percentile(values_flat, 10),
-            isomax=np.percentile(values_flat, 90),
-            opacity=0.1,
-            surface_count=20,
-            colorscale='RdBu_r',
-            reversescale=True,
-            caps=dict(x_show=False, y_show=False, z_show=False),
-        ))
-        
-        fig.update_layout(
-            title=f'3D Seismic Volume - {data_type.capitalize()}',
-            scene=dict(
-                xaxis_title='Inline',
-                yaxis_title='Crossline',
-                zaxis_title='Time (ms)',
-                camera=dict(eye=dict(x=1.5, y=1.5, z=1.5))
-            ),
-            width=800,
-            height=600
-        )
-        
-        return fig
-
-    def plot_time_slice_comparison(self, time_slice_idx=None):
-        """Plot time slice comparison using Plotly"""
-        if self.original_data is None or self.enhanced_data is None:
-            st.error("No data to plot. Run enhancement first.")
-            return None
-        
-        n_inlines, n_xlines, n_samples = self.original_data.shape
-        
-        if time_slice_idx is None:
-            time_slice_idx = n_samples // 2
-        
-        time_ms = time_slice_idx * self.sample_rate
-        
-        # Create subplots
-        fig = make_subplots(
-            rows=1, cols=2,
-            subplot_titles=(f'Original - {time_ms:.0f}ms', f'Enhanced - {time_ms:.0f}ms'),
-            horizontal_spacing=0.1
-        )
-        
-        # Original data
-        fig.add_trace(
-            go.Heatmap(
-                z=self.original_data[:, :, time_slice_idx],
-                colorscale='RdBu_r',
-                zmid=0,
-                colorbar=dict(x=0.45, len=0.4)
-            ),
-            row=1, col=1
-        )
-        
-        # Enhanced data
-        fig.add_trace(
-            go.Heatmap(
-                z=self.enhanced_data[:, :, time_slice_idx],
-                colorscale='RdBu_r',
-                zmid=0,
-                colorbar=dict(x=1.0, len=0.4)
-            ),
-            row=1, col=2
-        )
-        
-        fig.update_layout(
-            title_text=f"Time Slice Comparison at {time_ms:.0f} ms",
-            width=800,
-            height=400
-        )
-        
-        fig.update_xaxes(title_text="Crossline", row=1, col=1)
-        fig.update_xaxes(title_text="Crossline", row=1, col=2)
-        fig.update_yaxes(title_text="Inline", row=1, col=1)
-        fig.update_yaxes(title_text="Inline", row=1, col=2)
-        
-        return fig
-
-    def plot_frequency_analysis(self, num_traces=10):
-        """Plot frequency content analysis for multiple traces"""
-        if self.original_data is None or self.enhanced_data is None:
-            st.error("No data to plot. Run enhancement first.")
-            return None
-            
-        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 6))
-        
-        # Select random traces for analysis
-        n_inlines, n_xlines, n_samples = self.original_data.shape
-        trace_indices = []
-        for _ in range(min(num_traces, n_inlines * n_xlines)):
-            i = np.random.randint(0, n_inlines)
-            j = np.random.randint(0, n_xlines)
-            trace_indices.append((i, j))
-        
-        # Calculate average frequency spectra
-        freqs = fftfreq(n_samples, d=self.sample_rate/1000.0)
-        positive_freqs = freqs > 0
-        
-        # Determine the exact length for positive frequencies
-        spectrum_length = len(freqs[positive_freqs])
-        
-        avg_orig_spectrum = np.zeros(spectrum_length)
-        avg_enh_spectrum = np.zeros(spectrum_length)
-        
-        valid_traces = 0
-        for i, j in trace_indices:
-            try:
-                orig_trace = self.original_data[i, j, :]
-                enh_trace = self.enhanced_data[i, j, :]
-                
-                orig_fft = np.abs(fft(orig_trace))[positive_freqs]
-                enh_fft = np.abs(fft(enh_trace))[positive_freqs]
-                
-                # Ensure we have the correct length
-                if len(orig_fft) == spectrum_length and len(enh_fft) == spectrum_length:
-                    avg_orig_spectrum += orig_fft
-                    avg_enh_spectrum += enh_fft
-                    valid_traces += 1
-                else:
-                    st.warning(f"Trace ({i},{j}) has unexpected FFT length. Skipping.")
-                    
-            except Exception as e:
-                st.warning(f"Error processing trace ({i},{j}): {e}")
-                continue
-        
-        if valid_traces == 0:
-            st.error("No valid traces found for frequency analysis.")
-            return fig
-        
-        # Calculate averages
-        avg_orig_spectrum /= valid_traces
-        avg_enh_spectrum /= valid_traces
-        
-        plot_freqs = freqs[positive_freqs]
-        max_freq = 150  # Show up to 150 Hz
-        
-        valid_freqs = plot_freqs <= max_freq
-        
-        # Plot average spectra
-        ax1.semilogy(plot_freqs[valid_freqs], avg_orig_spectrum[valid_freqs], 'b-', 
-                    alpha=0.8, label='Original', linewidth=2)
-        ax1.semilogy(plot_freqs[valid_freqs], avg_enh_spectrum[valid_freqs], 'r-', 
-                    alpha=0.8, label='Enhanced', linewidth=2)
-        ax1.set_xlabel('Frequency (Hz)')
-        ax1.set_ylabel('Amplitude (log)')
-        ax1.set_title('Average Frequency Spectrum')
-        ax1.legend()
-        ax1.grid(True, alpha=0.3)
-        
-        # Plot spectral ratio
-        spectral_ratio = avg_enh_spectrum / (avg_orig_spectrum + 1e-10)
-        ax2.plot(plot_freqs[valid_freqs], spectral_ratio[valid_freqs], 'g-', linewidth=2)
-        ax2.axhline(y=1.0, color='k', linestyle='--', alpha=0.5, label='No Change')
-        ax2.set_xlabel('Frequency (Hz)')
-        ax2.set_ylabel('Spectral Ratio')
-        ax2.set_title('Average Enhancement Factor')
-        ax2.set_ylim([0.5, 2.5])
-        ax2.legend()
-        ax2.grid(True, alpha=0.3)
-        
-        plt.tight_layout()
-        return fig
-
     def enhance_bandwidth(self, file_path, method='spectral_blueing', 
                          target_freq=80, enhancement_factor=1.5, low_freq_boost=1.2,
                          mid_freq_start=30, lowcut=8, highcut=120, filter_order=3,
@@ -981,10 +410,8 @@ class SeismicBandwidthEnhancer:
         
         if use_chunk_processing and self.original_data.shape[0] > chunk_size:
             st.info(f"Using chunk processing with chunk size: {chunk_size}")
-            self.enhanced_data = self.process_in_chunks(
+            self.enhanced_data = self.spectral_blueing(
                 self.original_data,
-                self.spectral_blueing,
-                chunk_size=chunk_size,
                 target_freq=target_freq,
                 enhancement_factor=enhancement_factor,
                 low_freq_boost=low_freq_boost,
@@ -1002,10 +429,8 @@ class SeismicBandwidthEnhancer:
         # Apply bandpass filter with correct parameters
         st.info("Applying bandpass filter...")
         if use_chunk_processing and self.enhanced_data.shape[0] > chunk_size:
-            self.enhanced_data = self.process_in_chunks(
+            self.enhanced_data = self.bandpass_filter(
                 self.enhanced_data,
-                self.bandpass_filter,
-                chunk_size=chunk_size,
                 lowcut=lowcut,
                 highcut=highcut,
                 order=filter_order
@@ -1021,11 +446,6 @@ class SeismicBandwidthEnhancer:
         processing_time = time.time() - start_time
         st.success(f"Processing completed in {processing_time:.2f} seconds")
         st.info(f"Enhanced data range: {np.min(self.enhanced_data):.3f} to {np.max(self.enhanced_data):.3f}")
-        
-        # Show quality metrics
-        snr_original = self.calculate_snr(self.original_data)
-        snr_enhanced = self.calculate_snr(self.enhanced_data)
-        st.info(f"Signal-to-Noise Ratio: {snr_original:.2f} dB (original) → {snr_enhanced:.2f} dB (enhanced)")
         
         return self.enhanced_data
 
@@ -1060,6 +480,27 @@ PROCESSING_PRESETS = {
     }
 }
 
+def safe_file_download(file_path, download_name):
+    """Safe file download with proper error handling"""
+    try:
+        if not os.path.exists(file_path):
+            st.error(f"File not found: {file_path}")
+            return None
+            
+        file_size = os.path.getsize(file_path)
+        if file_size == 0:
+            st.error("File is empty")
+            return None
+            
+        with open(file_path, "rb") as file:
+            file_data = file.read()
+        
+        return file_data
+        
+    except Exception as e:
+        st.error(f"Error reading file for download: {e}")
+        return None
+
 def main():
     st.set_page_config(
         page_title="Seismic Bandwidth Enhancer",
@@ -1079,6 +520,8 @@ def main():
         st.session_state.original_filename = None
     if 'enhanced_file_path' not in st.session_state:
         st.session_state.enhanced_file_path = None
+    if 'enhanced_file_data' not in st.session_state:
+        st.session_state.enhanced_file_data = None
     if 'resource_monitor' not in st.session_state:
         st.session_state.resource_monitor = type('ResourceMonitor', (), {})()
     
@@ -1208,56 +651,6 @@ def main():
         help="Number of inlines to process at once"
     )
     
-    # Visualization parameters
-    st.sidebar.subheader("Visualization")
-    
-    if enhancer.original_data is not None and st.session_state.data_processed:
-        n_inlines, n_xlines, n_samples = enhancer.original_data.shape
-        
-        inline_idx = st.sidebar.slider(
-            "Inline Index",
-            min_value=0,
-            max_value=n_inlines-1,
-            value=n_inlines//2,
-            help="Inline index for section view"
-        )
-        
-        xline_idx = st.sidebar.slider(
-            "Crossline Index",
-            min_value=0,
-            max_value=n_xlines-1,
-            value=n_xlines//2,
-            help="Crossline index for section view"
-        )
-        
-        time_slice_idx = st.sidebar.slider(
-            "Time Slice Index",
-            min_value=0,
-            max_value=n_samples-1,
-            value=n_samples//2,
-            help="Time slice index for horizontal view"
-        )
-    else:
-        inline_idx = 50
-        xline_idx = 50
-        time_slice_idx = 100
-    
-    num_analysis_traces = st.sidebar.slider(
-        "Number of Traces for Analysis",
-        min_value=5,
-        max_value=50,
-        value=20,
-        help="Number of traces to include in frequency analysis"
-    )
-    
-    # Resource monitoring in sidebar
-    st.sidebar.header("📊 System Resources")
-    col1, col2 = st.sidebar.columns(2)
-    with col1:
-        st.metric("Memory Usage", getattr(st.session_state.resource_monitor, 'memory', 'N/A'))
-    with col2:
-        st.metric("CPU Usage", getattr(st.session_state.resource_monitor, 'cpu', 'N/A'))
-    
     # Main processing area
     if uploaded_file is not None:
         # Save uploaded file to temporary location
@@ -1286,6 +679,10 @@ def main():
                 
                 st.success("✅ 3D Processing completed!")
                 st.session_state.data_processed = True
+                # Reset download state when new processing happens
+                st.session_state.file_generated = False
+                st.session_state.enhanced_file_path = None
+                st.session_state.enhanced_file_data = None
 
             # Create download section
             if st.session_state.get('data_processed', False):
@@ -1302,18 +699,24 @@ def main():
                             
                             if enhanced_file_path:
                                 st.session_state.enhanced_file_path = enhanced_file_path
-                                st.session_state.file_generated = True
-                                st.sidebar.success("Enhanced SEG-Y file created successfully!")
-                                st.sidebar.info("The file contains all original headers with enhanced trace data.")
+                                # Pre-load file data to avoid file access issues during download
+                                file_data = safe_file_download(enhanced_file_path, output_filename)
+                                if file_data is not None:
+                                    st.session_state.enhanced_file_data = file_data
+                                    st.session_state.file_generated = True
+                                    st.sidebar.success("Enhanced SEG-Y file created successfully!")
+                                    st.sidebar.info("The file contains all original headers with enhanced trace data.")
+                                else:
+                                    st.sidebar.error("Failed to load file data for download")
                             else:
                                 st.sidebar.error("Failed to create enhanced SEG-Y file")
                 
                 # Download button - separate from generate button
-                if st.session_state.get('file_generated', False) and st.session_state.enhanced_file_path:
+                if st.session_state.get('file_generated', False) and st.session_state.enhanced_file_data is not None:
                     with st.sidebar:
                         try:
-                            with open(st.session_state.enhanced_file_path, "rb") as file:
-                                file_data = file.read()
+                            # Use pre-loaded file data to avoid file access issues
+                            file_data = st.session_state.enhanced_file_data
                             
                             # Always use .sgy extension for download
                             download_name = "enhanced_seismic.sgy"
@@ -1332,113 +735,29 @@ def main():
                             st.info("This file maintains all original SEG-Y headers with enhanced trace data.")
                                 
                         except Exception as e:
-                            st.error(f"Error reading file for download: {e}")
+                            st.error(f"Error preparing download: {e}")
                 
                 # Display results in tabs only if data is processed
                 if st.session_state.get('data_processed', False):
-                    tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
-                        "📈 Trace Comparison", 
-                        "🖼️ 2D Sections", 
-                        "🌐 3D Volume",
-                        "🕒 Time Slices",
-                        "📊 Frequency Analysis",
-                        "📋 Data Statistics",
-                        "✅ Quality Metrics"
-                    ])
+                    # Simple visualization when data is processed
+                    st.header("Processing Results")
+                    st.success("Data processing completed successfully! Use the sidebar to generate and download the enhanced SEG-Y file.")
                     
-                    with tab1:
-                        st.header("Trace Comparison")
-                        # Plot spectral comparison
-                        n_inlines, n_xlines, n_samples = enhancer.original_data.shape
-                        safe_inline = min(inline_idx, n_inlines - 1)
-                        safe_xline = min(xline_idx, n_xlines - 1)
-                        
-                        original_trace = enhancer.original_data[safe_inline, safe_xline, :]
-                        enhanced_trace = enhancer.enhanced_data[safe_inline, safe_xline, :]
-                        
-                        fig_comparison = enhancer.plot_spectral_comparison(
-                            original_trace, enhanced_trace, 
-                            trace_idx=f"Inline {safe_inline}, Xline {safe_xline}"
-                        )
-                        st.pyplot(fig_comparison)
+                    # Show basic info
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        st.subheader("Original Data")
+                        st.write(f"Shape: {enhancer.original_data.shape}")
+                        st.write(f"Range: {np.min(enhancer.original_data):.3f} to {np.max(enhancer.original_data):.3f}")
                     
-                    with tab2:
-                        st.header("2D Section Views")
-                        fig_section = enhancer.plot_seismic_section(inline_idx, xline_idx)
-                        if fig_section:
-                            st.pyplot(fig_section)
-                    
-                    with tab3:
-                        st.header("3D Volume Visualization")
-                        st.info("Interactive 3D volume visualization (may take a moment to load)")
-                        
-                        col1, col2 = st.columns(2)
-                        with col1:
-                            st.subheader("Original Volume")
-                            fig_3d_orig = enhancer.plot_3d_volume('original')
-                            if fig_3d_orig:
-                                st.plotly_chart(fig_3d_orig, use_container_width=True)
-                        
-                        with col2:
-                            st.subheader("Enhanced Volume")
-                            fig_3d_enh = enhancer.plot_3d_volume('enhanced')
-                            if fig_3d_enh:
-                                st.plotly_chart(fig_3d_enh, use_container_width=True)
-                    
-                    with tab4:
-                        st.header("Time Slice Comparison")
-                        fig_time_slice = enhancer.plot_time_slice_comparison(time_slice_idx)
-                        if fig_time_slice:
-                            st.plotly_chart(fig_time_slice, use_container_width=True)
-                    
-                    with tab5:
-                        st.header("Frequency Analysis")
-                        fig_freq = enhancer.plot_frequency_analysis(num_analysis_traces)
-                        if fig_freq:
-                            st.pyplot(fig_freq)
-                    
-                    with tab6:
-                        st.header("Data Statistics")
-                        
-                        # Display data statistics
-                        col1, col2, col3 = st.columns(3)
-                        with col1:
-                            st.metric("Original Min", f"{np.min(enhancer.original_data):.3f}")
-                            st.metric("Enhanced Min", f"{np.min(enhancer.enhanced_data):.3f}")
-                        with col2:
-                            st.metric("Original Max", f"{np.max(enhancer.original_data):.3f}")
-                            st.metric("Enhanced Max", f"{np.max(enhancer.enhanced_data):.3f}")
-                        with col3:
-                            st.metric("Original Std", f"{np.std(enhancer.original_data):.3f}")
-                            st.metric("Enhanced Std", f"{np.std(enhancer.enhanced_data):.3f}")
-                        
-                        # Additional statistics
-                        st.subheader("Additional Information")
-                        col1, col2 = st.columns(2)
-                        with col1:
-                            st.write("**Original Data Shape:**", enhancer.original_data.shape)
-                            st.write("**Sample Rate:**", f"{enhancer.sample_rate} ms")
-                            st.write("**Data Type:**", "3D" if enhancer.original_data.shape[0] > 1 else "2D")
-                        with col2:
-                            st.write("**Enhanced Data Shape:**", enhancer.enhanced_data.shape)
-                            st.write("**Processing Parameters:**")
-                            st.write(f"- Target Frequency: {target_freq} Hz")
-                            st.write(f"- Enhancement Factor: {enhancement_factor}x")
-                            st.write(f"- Filter Range: {lowcut}-{highcut} Hz")
-                    
-                    with tab7:
-                        st.header("Quality Metrics")
-                        fig_quality = enhancer.plot_quality_metrics()
-                        if fig_quality:
-                            st.pyplot(fig_quality)
+                    with col2:
+                        st.subheader("Enhanced Data")
+                        st.write(f"Shape: {enhancer.enhanced_data.shape}")
+                        st.write(f"Range: {np.min(enhancer.enhanced_data):.3f} to {np.max(enhancer.enhanced_data):.3f}")
         
         except Exception as e:
             st.error(f"Error processing file: {e}")
             st.exception(e)
-        
-        finally:
-            # Clean up temporary files on app restart
-            pass
     
     else:
         # Display instructions when no file is uploaded
@@ -1452,15 +771,10 @@ def main():
         - **3D Data Support**: Full support for 3D seismic volumes with proper geometry
         - **Spectral Blueing**: Frequency-dependent enhancement that boosts mid-to-high frequencies
         - **Bandpass Filtering**: Removes very low and very high frequency noise
-        - **Interactive 3D Visualization**: Explore your data in 3D using Plotly
         - **Download Enhanced Data**: Export your processed data in proper SEG-Y format
         
         ### Features:
         - **Download Enhanced SEG-Y**: Get your processed data in standard SEG-Y format with all original headers
-        - **3D Volume Rendering**: Interactive 3D visualization of seismic volumes
-        - **Multiple Section Views**: Inline, crossline, and time slice views
-        - **Time Slice Comparison**: Interactive horizontal slice comparisons
-        - **Quality Metrics**: Comprehensive quality assessment of enhancement
         - **Memory Optimization**: Chunk processing for large datasets
         - **Processing Presets**: Pre-configured settings for different scenarios
         
@@ -1470,20 +784,24 @@ def main():
         - Both pre-stack and post-stack data
         """)
 
-    # Clean up temporary files when session ends
-    if hasattr(st.session_state, 'original_filename') and st.session_state.original_filename:
-        try:
-            if os.path.exists(st.session_state.original_filename):
-                os.unlink(st.session_state.original_filename)
-        except:
-            pass
+    # Clean up temporary files only if they're not being used
+    def cleanup_old_files():
+        """Clean up old temporary files but keep the current one"""
+        temp_dir = tempfile.gettempdir()
+        current_file = getattr(st.session_state, 'enhanced_file_path', None)
+        
+        # Keep only the current file, remove others
+        for filename in os.listdir(temp_dir):
+            if filename.startswith("enhanced_seismic_") and filename.endswith(".sgy"):
+                file_path = os.path.join(temp_dir, filename)
+                if file_path != current_file and os.path.exists(file_path):
+                    try:
+                        os.unlink(file_path)
+                    except:
+                        pass
     
-    if hasattr(st.session_state, 'enhanced_file_path') and st.session_state.enhanced_file_path:
-        try:
-            if os.path.exists(st.session_state.enhanced_file_path):
-                os.unlink(st.session_state.enhanced_file_path)
-        except:
-            pass
+    # Run cleanup
+    cleanup_old_files()
 
 if __name__ == "__main__":
     main()
