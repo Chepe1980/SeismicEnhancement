@@ -22,7 +22,7 @@ class SeismicBandwidthEnhancer:
     def __init__(self):
         self.original_data = None
         self.enhanced_data = None
-        self.sample_rate = 4.0  # Default 4ms, adjust if needed
+        self.sample_rate = 4.0
         self.geometry = None
         self.original_segyfile = None
         self.original_filename = None
@@ -87,11 +87,10 @@ class SeismicBandwidthEnhancer:
         return data
 
     def read_segy(self, filename):
-        """Main method to read SEG-Y file"""
         return self.read_segy_3d(filename)
 
-    def write_segy_robust(self, output_filename):
-        """Most robust SEG-Y writing method using direct binary operations"""
+    def write_segy_numpy_based(self, output_filename):
+        """Reliable SEG-Y writing using numpy and direct file operations"""
         if self.enhanced_data is None:
             st.error("No enhanced data available to write")
             return False
@@ -101,15 +100,14 @@ class SeismicBandwidthEnhancer:
             with segyio.open(self.original_filename, "r") as src:
                 n_traces = src.tracecount
                 n_samples = len(src.samples)
-                format_code = src.format
                 
                 # Get all textual headers
                 textual_headers = []
                 for i in range(len(src.text)):
                     textual_headers.append(src.text[i])
                 
-                # Get binary header
-                binary_header = src.bin
+                # Get binary header information
+                bin_header = src.bin
                 
                 # Get all trace headers
                 trace_headers = []
@@ -119,64 +117,70 @@ class SeismicBandwidthEnhancer:
             # Flatten enhanced data
             enhanced_flat = self.enhanced_data.reshape(-1, self.enhanced_data.shape[-1])
             
-            # Create new SEG-Y file using direct binary writing
+            # Create new SEG-Y file
             with open(output_filename, 'wb') as f:
-                # Write textual headers (3200 bytes each)
+                # 1. Write textual headers (3200 bytes each)
                 for header in textual_headers:
-                    f.write(header.encode('ascii')[:3200].ljust(3200, b' '))
+                    # Ensure header is exactly 3200 bytes
+                    header_bytes = header.encode('ascii', errors='replace')[:3200]
+                    header_bytes = header_bytes.ljust(3200, b' ')
+                    f.write(header_bytes)
                 
-                # Write binary header (400 bytes)
-                self._write_binary_header(f, binary_header, format_code)
+                # 2. Write binary header (400 bytes)
+                bin_header_bytes = self._create_binary_header(bin_header, n_samples)
+                f.write(bin_header_bytes)
                 
-                # Write traces
+                # 3. Write traces with headers
                 for i in range(n_traces):
                     # Write trace header (240 bytes)
-                    self._write_trace_header(f, trace_headers[i])
+                    trace_header_bytes = self._create_trace_header(trace_headers[i], n_samples)
+                    f.write(trace_header_bytes)
                     
                     # Write trace data
                     if i < len(enhanced_flat):
                         trace_data = enhanced_flat[i].astype(np.float32)
-                        if len(trace_data) > n_samples:
-                            trace_data = trace_data[:n_samples]
-                        elif len(trace_data) < n_samples:
-                            trace_data = np.pad(trace_data, (0, n_samples - len(trace_data)), 
-                                              mode='constant')
+                        # Ensure correct length
+                        if len(trace_data) != n_samples:
+                            if len(trace_data) > n_samples:
+                                trace_data = trace_data[:n_samples]
+                            else:
+                                trace_data = np.pad(trace_data, (0, n_samples - len(trace_data)), 
+                                                  mode='constant')
                         f.write(trace_data.tobytes())
                     else:
-                        # Fallback: write zeros if no enhanced data
+                        # Write zeros if no enhanced data
                         f.write(np.zeros(n_samples, dtype=np.float32).tobytes())
             
-            st.success(f"Robust SEG-Y writing completed: {output_filename}")
+            st.success(f"SEG-Y file created successfully: {output_filename}")
             return True
             
         except Exception as e:
-            st.error(f"Robust SEG-Y writing failed: {e}")
+            st.error(f"SEG-Y writing failed: {e}")
             return False
 
-    def _write_binary_header(self, file_obj, binary_header, format_code):
-        """Write binary header in proper SEG-Y format"""
-        # Start with 400 bytes of zeros
-        header_data = bytearray(400)
+    def _create_binary_header(self, bin_header, n_samples):
+        """Create binary header bytes"""
+        header_data = bytearray(400)  # 400 bytes for binary header
         
-        # Set basic binary header values
+        # Set important binary header fields
         # Job identification number (bytes 0-3)
-        job_id = binary_header.get(segyio.BinField.JobID, 0)
+        job_id = bin_header.get(segyio.BinField.JobID, 1)
         struct.pack_into('>i', header_data, 0, job_id)
         
         # Line number (bytes 4-7)
-        line_number = binary_header.get(segyio.BinField.LineNumber, 0)
+        line_number = bin_header.get(segyio.BinField.LineNumber, 1)
         struct.pack_into('>i', header_data, 4, line_number)
         
         # Reel number (bytes 8-11)
-        reel_number = binary_header.get(segyio.BinField.ReelNumber, 0)
+        reel_number = bin_header.get(segyio.BinField.ReelNumber, 1)
         struct.pack_into('>i', header_data, 8, reel_number)
         
         # Number of data traces per ensemble (bytes 12-13)
-        traces_ensemble = binary_header.get(segyio.BinField.Traces, 0)
+        traces_ensemble = bin_header.get(segyio.BinField.Traces, 1)
         struct.pack_into('>h', header_data, 12, traces_ensemble)
         
         # Number of auxiliary traces per ensemble (bytes 14-15)
-        aux_traces = binary_header.get(segyio.BinField.AuxTraces, 0)
+        aux_traces = bin_header.get(segyio.BinField.AuxTraces, 0)
         struct.pack_into('>h', header_data, 14, aux_traces)
         
         # Sample interval in microseconds (bytes 16-17)
@@ -184,48 +188,44 @@ class SeismicBandwidthEnhancer:
         struct.pack_into('>h', header_data, 16, sample_interval)
         
         # Number of samples per data trace (bytes 20-21)
-        samples_per_trace = binary_header.get(segyio.BinField.Samples, 0)
-        struct.pack_into('>h', header_data, 20, samples_per_trace)
+        struct.pack_into('>h', header_data, 20, n_samples)
         
-        # Data sample format code (bytes 24-25)
-        # 1 = 4-byte IBM floating point, 5 = 4-byte IEEE floating point
-        struct.pack_into('>h', header_data, 24, 5)  # Use IEEE float
+        # Data sample format code (bytes 24-25) - 5 for IEEE floating point
+        struct.pack_into('>h', header_data, 24, 5)
         
         # Ensemble fold (bytes 28-29)
-        ensemble_fold = binary_header.get(segyio.BinField.EnsembleFold, 0)
+        ensemble_fold = bin_header.get(segyio.BinField.EnsembleFold, 1)
         struct.pack_into('>h', header_data, 28, ensemble_fold)
         
-        # Write the binary header
-        file_obj.write(header_data)
+        return header_data
 
-    def _write_trace_header(self, file_obj, trace_header):
-        """Write trace header in proper SEG-Y format"""
-        # Start with 240 bytes of zeros
-        header_data = bytearray(240)
+    def _create_trace_header(self, trace_header, n_samples):
+        """Create trace header bytes"""
+        header_data = bytearray(240)  # 240 bytes for trace header
         
-        # Set important trace header values
+        # Set important trace header fields
         # Trace sequence number (bytes 0-3)
-        trace_seq = trace_header.get(segyio.TraceField.TRACE_SEQUENCE_FILE, 0)
+        trace_seq = trace_header.get(segyio.TraceField.TRACE_SEQUENCE_FILE, 1)
         struct.pack_into('>i', header_data, 0, trace_seq)
         
         # Field record number (bytes 8-11)
-        field_record = trace_header.get(segyio.TraceField.FieldRecord, 0)
+        field_record = trace_header.get(segyio.TraceField.FieldRecord, 1)
         struct.pack_into('>i', header_data, 8, field_record)
         
         # Trace number (bytes 12-15)
-        trace_number = trace_header.get(segyio.TraceField.TRACE_NUMBER, 0)
+        trace_number = trace_header.get(segyio.TraceField.TRACE_NUMBER, 1)
         struct.pack_into('>i', header_data, 12, trace_number)
         
         # Energy source point number (bytes 16-19)
-        source_point = trace_header.get(segyio.TraceField.SourcePoint, 0)
+        source_point = trace_header.get(segyio.TraceField.SourcePoint, 1)
         struct.pack_into('>i', header_data, 16, source_point)
         
         # CDP number (bytes 20-23)
-        cdp_number = trace_header.get(segyio.TraceField.CDP, 0)
+        cdp_number = trace_header.get(segyio.TraceField.CDP, 1)
         struct.pack_into('>i', header_data, 20, cdp_number)
         
         # CDP trace number (bytes 24-27)
-        cdp_trace = trace_header.get(segyio.TraceField.CDP_TRACE, 0)
+        cdp_trace = trace_header.get(segyio.TraceField.CDP_TRACE, 1)
         struct.pack_into('>i', header_data, 24, cdp_trace)
         
         # Trace identification code (bytes 28-29)
@@ -233,53 +233,70 @@ class SeismicBandwidthEnhancer:
         struct.pack_into('>h', header_data, 28, trace_id)
         
         # Number of samples in this trace (bytes 114-115)
-        num_samples = trace_header.get(segyio.TraceField.TRACE_SAMPLE_COUNT, 0)
-        struct.pack_into('>h', header_data, 114, num_samples)
+        struct.pack_into('>h', header_data, 114, n_samples)
         
         # Sample interval in microseconds (bytes 116-117)
-        sample_interval = int(self.sample_rate * 1000)  # Convert ms to microseconds
+        sample_interval = int(self.sample_rate * 1000)
         struct.pack_into('>h', header_data, 116, sample_interval)
         
-        # Write the trace header
-        file_obj.write(header_data)
+        return header_data
 
-    def write_segy_simple(self, output_filename):
-        """Simple SEG-Y writing using basic segyio functionality"""
+    def write_segy_copy_replace(self, output_filename):
+        """Copy original file and replace trace data only"""
         try:
-            with segyio.open(self.original_filename, "r") as src:
-                # Create new file with same structure
-                spec = segyio.spec()
-                spec.sorting = src.sorting
-                spec.format = src.format
-                spec.samples = src.samples
-                
-                # Handle 3D geometry if available
-                if hasattr(src, 'ilines') and hasattr(src, 'xlines'):
-                    spec.ilines = src.ilines
-                    spec.xlines = src.xlines
-                
-                with segyio.open(output_filename, "w", spec) as dst:
-                    # Copy textual headers
-                    for i in range(len(src.text)):
-                        dst.text[i] = src.text[i]
-                    
-                    # Copy binary header
-                    dst.bin = src.bin
-                    
-                    # Copy headers and write enhanced data
-                    n_traces = src.tracecount
-                    enhanced_flat = self.enhanced_data.reshape(-1, self.enhanced_data.shape[-1])
-                    
-                    for i in range(n_traces):
-                        dst.header[i] = src.header[i]
-                        if i < len(enhanced_flat):
-                            dst.trace[i] = enhanced_flat[i].astype(np.float32)
-                        else:
-                            dst.trace[i] = src.trace[i]
+            import shutil
+            # Copy original file
+            shutil.copy2(self.original_filename, output_filename)
             
+            # Open copied file and replace trace data
+            with segyio.open(output_filename, "r+") as dst:
+                n_traces = dst.tracecount
+                enhanced_flat = self.enhanced_data.reshape(-1, self.enhanced_data.shape[-1])
+                
+                for i in range(min(n_traces, len(enhanced_flat))):
+                    trace_data = enhanced_flat[i].astype(np.float32)
+                    dst.trace[i] = trace_data
+            
+            st.success(f"Copy-replace SEG-Y writing completed: {output_filename}")
             return True
+            
         except Exception as e:
-            st.warning(f"Simple SEG-Y writing failed: {e}")
+            st.error(f"Copy-replace writing failed: {e}")
+            return False
+
+    def create_numpy_alternative(self, output_filename):
+        """Create a numpy-based alternative format with metadata"""
+        try:
+            # Create a comprehensive metadata dictionary
+            metadata = {
+                'original_shape': self.original_data.shape if self.original_data is not None else None,
+                'enhanced_shape': self.enhanced_data.shape,
+                'sample_rate': self.sample_rate,
+                'data_type': 'enhanced_seismic_3d',
+                'description': 'Enhanced 3D seismic data created by Seismic Bandwidth Enhancer',
+                'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
+                'processing_parameters': {
+                    'target_frequency': getattr(self, 'target_freq', 'unknown'),
+                    'enhancement_factor': getattr(self, 'enhancement_factor', 'unknown'),
+                    'bandpass_range': f"{getattr(self, 'lowcut', 'unknown')}-{getattr(self, 'highcut', 'unknown')} Hz"
+                }
+            }
+            
+            # Create the file
+            with open(output_filename, 'wb') as f:
+                # Write metadata as JSON
+                metadata_json = json.dumps(metadata, indent=2)
+                f.write(metadata_json.encode('utf-8'))
+                f.write(b'\n' + b'END_METADATA' + b'\n')
+                
+                # Write the enhanced data
+                self.enhanced_data.astype(np.float32).tofile(f)
+            
+            st.success(f"Created numpy alternative file: {output_filename}")
+            return True
+            
+        except Exception as e:
+            st.error(f"Numpy alternative creation failed: {e}")
             return False
 
     def create_downloadable_segy(self, output_filename):
@@ -300,33 +317,51 @@ class SeismicBandwidthEnhancer:
             
             st.info("Creating enhanced SEG-Y file...")
             
-            # Try robust binary method first (most reliable)
-            success = self.write_segy_robust(download_filename)
+            # Try methods in order of reliability
+            methods = [
+                ("Numpy-based SEG-Y", self.write_segy_numpy_based),
+                ("Copy-replace", self.write_segy_copy_replace),
+            ]
+            
+            success = False
+            for method_name, method_func in methods:
+                st.info(f"Trying {method_name}...")
+                success = method_func(download_filename)
+                if success:
+                    st.success(f"{method_name} succeeded!")
+                    break
+                else:
+                    st.warning(f"{method_name} failed")
             
             if not success:
-                # Fallback to simple method
-                st.info("Trying alternative SEG-Y writing method...")
-                success = self.write_segy_simple(download_filename)
+                # Fallback to numpy alternative format
+                st.info("SEG-Y methods failed, creating numpy alternative format...")
+                alt_filename = os.path.join(temp_dir, f"enhanced_{unique_id}.dat")
+                success = self.create_numpy_alternative(alt_filename)
+                if success:
+                    download_filename = alt_filename
+                    st.warning("Created numpy alternative format (.dat) instead of SEG-Y")
             
             if success:
                 # Verify file was created
                 if os.path.exists(download_filename) and os.path.getsize(download_filename) > 0:
                     file_size = os.path.getsize(download_filename) / (1024 * 1024)
-                    st.success(f"Enhanced SEG-Y file created successfully! Size: {file_size:.2f} MB")
+                    st.success(f"Enhanced file created successfully! Size: {file_size:.2f} MB")
                     
-                    # Quick verification
-                    try:
-                        with segyio.open(download_filename, "r") as test_file:
-                            st.info(f"File verified: {test_file.tracecount} traces, {len(test_file.samples)} samples")
-                        return download_filename
-                    except Exception as e:
-                        st.warning(f"File created but verification failed: {e}")
-                        return download_filename
+                    # Quick verification for SEG-Y files
+                    if download_filename.endswith(('.sgy', '.segy')):
+                        try:
+                            with segyio.open(download_filename, "r") as test_file:
+                                st.info(f"SEG-Y verification: {test_file.tracecount} traces, {len(test_file.samples)} samples")
+                        except:
+                            st.warning("File created but SEG-Y verification failed")
+                    
+                    return download_filename
                 else:
                     st.error("File was not created properly")
                     return None
             else:
-                st.error("All SEG-Y writing methods failed")
+                st.error("All file creation methods failed")
                 return None
                 
         except Exception as e:
@@ -472,16 +507,20 @@ class SeismicBandwidthEnhancer:
     
         return enhanced_data
 
-    def enhance_bandwidth(self, file_path, method='spectral_blueing', 
-                         target_freq=80, enhancement_factor=1.5, low_freq_boost=1.2,
-                         mid_freq_start=30, lowcut=8, highcut=120, filter_order=3,
-                         use_chunk_processing=True, chunk_size=50):
+    def enhance_bandwidth(self, file_path, target_freq=80, enhancement_factor=1.5, low_freq_boost=1.2,
+                         mid_freq_start=30, lowcut=8, highcut=120, filter_order=3):
         """Main method to enhance seismic bandwidth"""
         st.info(f"Loading SEG-Y file...")
         self.original_data = self.read_segy(file_path)
         
         if self.original_data is None:
             raise ValueError("Failed to load SEG-Y file")
+        
+        # Store parameters for metadata
+        self.target_freq = target_freq
+        self.enhancement_factor = enhancement_factor
+        self.lowcut = lowcut
+        self.highcut = highcut
         
         st.success(f"Original data shape: {self.original_data.shape}")
         st.info(f"Original data range: {np.min(self.original_data):.3f} to {np.max(self.original_data):.3f}")
@@ -490,41 +529,22 @@ class SeismicBandwidthEnhancer:
         
         # Apply spectral blueing
         st.info("Starting spectral blueing...")
-        
-        if use_chunk_processing and self.original_data.shape[0] > chunk_size:
-            st.info(f"Using chunk processing with chunk size: {chunk_size}")
-            self.enhanced_data = self.spectral_blueing(
-                self.original_data,
-                target_freq=target_freq,
-                enhancement_factor=enhancement_factor,
-                low_freq_boost=low_freq_boost,
-                mid_freq_range=(mid_freq_start, target_freq)
-            )
-        else:
-            self.enhanced_data = self.spectral_blueing(
-                self.original_data, 
-                target_freq=target_freq,
-                enhancement_factor=enhancement_factor,
-                low_freq_boost=low_freq_boost,
-                mid_freq_range=(mid_freq_start, target_freq)
-            )
+        self.enhanced_data = self.spectral_blueing(
+            self.original_data,
+            target_freq=target_freq,
+            enhancement_factor=enhancement_factor,
+            low_freq_boost=low_freq_boost,
+            mid_freq_range=(mid_freq_start, target_freq)
+        )
         
         # Apply bandpass filter
         st.info("Applying bandpass filter...")
-        if use_chunk_processing and self.enhanced_data.shape[0] > chunk_size:
-            self.enhanced_data = self.bandpass_filter(
-                self.enhanced_data,
-                lowcut=lowcut,
-                highcut=highcut,
-                order=filter_order
-            )
-        else:
-            self.enhanced_data = self.bandpass_filter(
-                self.enhanced_data, 
-                lowcut=lowcut,
-                highcut=highcut,
-                order=filter_order
-            )
+        self.enhanced_data = self.bandpass_filter(
+            self.enhanced_data,
+            lowcut=lowcut,
+            highcut=highcut,
+            order=filter_order
+        )
         
         processing_time = time.time() - start_time
         st.success(f"Processing completed in {processing_time:.2f} seconds")
@@ -690,37 +710,50 @@ def main():
             if st.session_state.get('data_processed', False):
                 st.sidebar.header("💾 Download Results")
                 
-                if st.sidebar.button("🛠️ Generate Enhanced SEG-Y File", type="secondary", use_container_width=True):
+                if st.sidebar.button("🛠️ Generate Enhanced File", type="secondary", use_container_width=True):
                     with st.sidebar:
-                        with st.spinner("Creating enhanced SEG-Y file..."):
-                            enhanced_file_path = enhancer.create_downloadable_segy("enhanced_seismic.sgy")
+                        with st.spinner("Creating enhanced file..."):
+                            enhanced_file_path = enhancer.create_downloadable_segy("enhanced_data")
                             
                             if enhanced_file_path:
                                 st.session_state.enhanced_file_path = enhanced_file_path
-                                file_data = safe_file_download(enhanced_file_path, "enhanced_seismic.sgy")
+                                file_data = safe_file_download(enhanced_file_path, "enhanced_data")
                                 if file_data is not None:
                                     st.session_state.enhanced_file_data = file_data
                                     st.session_state.file_generated = True
-                                    st.sidebar.success("Enhanced SEG-Y file created successfully!")
+                                    
+                                    if enhanced_file_path.endswith('.sgy'):
+                                        st.sidebar.success("Enhanced SEG-Y file created successfully!")
+                                    else:
+                                        st.sidebar.success("Enhanced data file created successfully!")
+                                        st.sidebar.info("This is a numpy format with metadata header")
                                 else:
                                     st.sidebar.error("Failed to load file data")
                             else:
-                                st.sidebar.error("Failed to create enhanced SEG-Y file")
+                                st.sidebar.error("Failed to create enhanced file")
                 
                 if st.session_state.get('file_generated', False) and st.session_state.enhanced_file_data is not None:
                     with st.sidebar:
                         file_data = st.session_state.enhanced_file_data
+                        file_path = st.session_state.enhanced_file_path
+                        
+                        if file_path.endswith('.sgy'):
+                            download_name = "enhanced_seismic.sgy"
+                            label = "📥 Download Enhanced SEG-Y"
+                        else:
+                            download_name = "enhanced_seismic_data.dat"
+                            label = "📥 Download Enhanced Data"
                         
                         st.download_button(
-                            label="📥 Download Enhanced SEG-Y",
+                            label=label,
                             data=file_data,
-                            file_name="enhanced_seismic.sgy",
+                            file_name=download_name,
                             mime="application/octet-stream",
-                            help="Download the enhanced seismic data in SEG-Y format",
+                            help="Download the enhanced seismic data",
                             key="download_enhanced_data",
                             use_container_width=True
                         )
-                        st.success("Enhanced SEG-Y file ready for download!")
+                        st.success("Enhanced file ready for download!")
                 
                 # Display results
                 st.header("Processing Results")
@@ -751,13 +784,13 @@ def main():
         1. Upload a SEG-Y file
         2. Adjust processing parameters
         3. Click "Process Seismic Data"
-        4. Generate and download the enhanced SEG-Y file
+        4. Generate and download the enhanced file
         
-        ### Features:
-        - **Robust SEG-Y Support**: Handles various SEG-Y formats
-        - **Spectral Enhancement**: Improves frequency content
-        - **Bandpass Filtering**: Removes noise
-        - **Download Ready**: Get enhanced data in standard SEG-Y format
+        ### Output Formats:
+        - **SEG-Y format**: Standard seismic format (preferred)
+        - **Numpy format**: With metadata header (fallback)
+        
+        Both formats contain the enhanced seismic data ready for analysis.
         """)
 
 if __name__ == "__main__":
