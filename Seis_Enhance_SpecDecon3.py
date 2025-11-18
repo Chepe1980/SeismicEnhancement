@@ -781,74 +781,86 @@ def create_rgb_plotly_figure(rgb_data, title):
 
 def compute_frequency_spectrum(trace, sample_rate):
     """Compute frequency spectrum for a trace"""
-    n = len(trace)
-    if n == 0:
+    if trace is None or len(trace) == 0:
         return np.array([]), np.array([])
     
-    # Apply FFT
-    fft_result = fft(trace)
-    freqs = fftfreq(n, d=sample_rate/1000.0)
-    
-    # Take only positive frequencies
-    positive_freq_idx = freqs > 0
-    freqs_positive = freqs[positive_freq_idx]
-    amplitude = np.abs(fft_result[positive_freq_idx])
-    
-    return freqs_positive, amplitude
+    try:
+        n = len(trace)
+        # Apply FFT
+        fft_result = fft(trace)
+        freqs = fftfreq(n, d=sample_rate/1000.0)
+        
+        # Take only positive frequencies
+        positive_freq_idx = freqs > 0
+        freqs_positive = freqs[positive_freq_idx]
+        amplitude = np.abs(fft_result[positive_freq_idx])
+        
+        return freqs_positive, amplitude
+    except Exception as e:
+        st.warning(f"Error computing frequency spectrum: {e}")
+        return np.array([]), np.array([])
 
 def compute_average_spectrum(section_data, sample_rate, section_type):
     """Compute average frequency spectrum for a section (inline, crossline, or slice)"""
-    if section_type == "Time Slice":
-        # For time slice, average across all traces in the slice
-        n_traces = section_data.shape[0] * section_data.shape[1]
-        avg_amplitude = None
-        
-        for i in range(section_data.shape[0]):
-            for j in range(section_data.shape[1]):
-                trace = section_data[i, j]
+    try:
+        if section_data is None or section_data.size == 0:
+            return np.array([]), np.array([])
+            
+        if section_type == "Time Slice":
+            # For time slice, we need to get the full traces for each position
+            n_inlines, n_xlines = section_data.shape
+            avg_amplitude = None
+            freqs_positive = None
+            
+            for i in range(n_inlines):
+                for j in range(n_xlines):
+                    # For time slice, we don't have full traces, so we can't compute spectrum
+                    # Instead, we'll return empty arrays
+                    return np.array([]), np.array([])
+            
+        elif section_type == "Inline":
+            # For inline, average across all traces in the inline
+            n_traces = section_data.shape[1]
+            avg_amplitude = None
+            freqs_positive = None
+            
+            for j in range(n_traces):
+                trace = section_data[:, j]
                 freqs, amplitude = compute_frequency_spectrum(trace, sample_rate)
-                if avg_amplitude is None:
-                    avg_amplitude = amplitude
-                else:
-                    avg_amplitude += amplitude
+                if amplitude.size > 0:
+                    if avg_amplitude is None:
+                        avg_amplitude = amplitude
+                        freqs_positive = freqs
+                    else:
+                        avg_amplitude += amplitude
+            
+            if avg_amplitude is not None:
+                avg_amplitude /= n_traces
+            return freqs_positive, avg_amplitude
         
-        if avg_amplitude is not None:
-            avg_amplitude /= n_traces
-        return freqs, avg_amplitude
-    
-    elif section_type == "Inline":
-        # For inline, average across all traces in the inline
-        n_traces = section_data.shape[1]
-        avg_amplitude = None
-        
-        for j in range(section_data.shape[1]):
-            trace = section_data[:, j]
-            freqs, amplitude = compute_frequency_spectrum(trace, sample_rate)
-            if avg_amplitude is None:
-                avg_amplitude = amplitude
-            else:
-                avg_amplitude += amplitude
-        
-        if avg_amplitude is not None:
-            avg_amplitude /= n_traces
-        return freqs, avg_amplitude
-    
-    else:  # Crossline
-        # For crossline, average across all traces in the crossline
-        n_traces = section_data.shape[0]
-        avg_amplitude = None
-        
-        for i in range(section_data.shape[0]):
-            trace = section_data[i, :]
-            freqs, amplitude = compute_frequency_spectrum(trace, sample_rate)
-            if avg_amplitude is None:
-                avg_amplitude = amplitude
-            else:
-                avg_amplitude += amplitude
-        
-        if avg_amplitude is not None:
-            avg_amplitude /= n_traces
-        return freqs, avg_amplitude
+        else:  # Crossline
+            # For crossline, average across all traces in the crossline
+            n_traces = section_data.shape[0]
+            avg_amplitude = None
+            freqs_positive = None
+            
+            for i in range(n_traces):
+                trace = section_data[i, :]
+                freqs, amplitude = compute_frequency_spectrum(trace, sample_rate)
+                if amplitude.size > 0:
+                    if avg_amplitude is None:
+                        avg_amplitude = amplitude
+                        freqs_positive = freqs
+                    else:
+                        avg_amplitude += amplitude
+            
+            if avg_amplitude is not None:
+                avg_amplitude /= n_traces
+            return freqs_positive, avg_amplitude
+            
+    except Exception as e:
+        st.warning(f"Error computing average spectrum: {e}")
+        return np.array([]), np.array([])
 
 def safe_get_colormap_index(colormap_name, default_index=0):
     """Safely get the index of a colormap in the COLORMAPS list"""
@@ -1022,9 +1034,14 @@ def display_bandwidth_enhancement_tab(enhancer):
                 
                 n_inlines, n_xlines, n_samples = enhancer.original_data.shape
                 
+                # Initialize section indices with default values
+                inline_idx = n_inlines // 2 if n_inlines > 0 else 0
+                crossline_idx = n_xlines // 2 if n_xlines > 0 else 0
+                time_slice = n_samples // 2 if n_samples > 0 else 0
+                
                 if section_type == "Inline":
                     with col2:
-                        inline_idx = st.slider("Inline", 0, n_inlines-1, n_inlines//2, key="bw_inline")
+                        inline_idx = st.slider("Inline", 0, n_inlines-1, inline_idx, key="bw_inline")
                     with col3:
                         display_type = st.selectbox("Display Type", ["Amplitude", "Difference"], key="bw_inline_display")
                     
@@ -1040,7 +1057,7 @@ def display_bandwidth_enhancement_tab(enhancer):
                         
                         # Frequency spectrum for original inline
                         freqs_orig, amp_orig = compute_average_spectrum(original_inline, enhancer.sample_rate, "Inline")
-                        if amp_orig is not None:
+                        if amp_orig is not None and len(amp_orig) > 0:
                             fig_spec_orig = go.Figure()
                             fig_spec_orig.add_trace(go.Scatter(x=freqs_orig, y=amp_orig, mode='lines', name='Original', line=dict(color='blue')))
                             fig_spec_orig.update_layout(
@@ -1050,6 +1067,8 @@ def display_bandwidth_enhancement_tab(enhancer):
                                 height=300
                             )
                             st.plotly_chart(fig_spec_orig, use_container_width=True)
+                        else:
+                            st.info("Frequency spectrum not available for this section type")
                     
                     with col2:
                         if display_type == "Amplitude":
@@ -1069,7 +1088,7 @@ def display_bandwidth_enhancement_tab(enhancer):
                         # Frequency spectrum for enhanced/difference inline
                         if display_type == "Amplitude":
                             freqs_enh, amp_enh = compute_average_spectrum(enhanced_inline, enhancer.sample_rate, "Inline")
-                            if amp_enh is not None:
+                            if amp_enh is not None and len(amp_enh) > 0:
                                 fig_spec_enh = go.Figure()
                                 fig_spec_enh.add_trace(go.Scatter(x=freqs_orig, y=amp_orig, mode='lines', name='Original', line=dict(color='blue', dash='dash')))
                                 fig_spec_enh.add_trace(go.Scatter(x=freqs_enh, y=amp_enh, mode='lines', name='Enhanced', line=dict(color='red')))
@@ -1083,7 +1102,7 @@ def display_bandwidth_enhancement_tab(enhancer):
                 
                 elif section_type == "Crossline":
                     with col2:
-                        crossline_idx = st.slider("Crossline", 0, n_xlines-1, n_xlines//2, key="bw_crossline")
+                        crossline_idx = st.slider("Crossline", 0, n_xlines-1, crossline_idx, key="bw_crossline")
                     with col3:
                         display_type = st.selectbox("Display Type", ["Amplitude", "Difference"], key="bw_xline_display")
                     
@@ -1099,7 +1118,7 @@ def display_bandwidth_enhancement_tab(enhancer):
                         
                         # Frequency spectrum for original crossline
                         freqs_orig, amp_orig = compute_average_spectrum(original_xline, enhancer.sample_rate, "Crossline")
-                        if amp_orig is not None:
+                        if amp_orig is not None and len(amp_orig) > 0:
                             fig_spec_orig = go.Figure()
                             fig_spec_orig.add_trace(go.Scatter(x=freqs_orig, y=amp_orig, mode='lines', name='Original', line=dict(color='blue')))
                             fig_spec_orig.update_layout(
@@ -1109,6 +1128,8 @@ def display_bandwidth_enhancement_tab(enhancer):
                                 height=300
                             )
                             st.plotly_chart(fig_spec_orig, use_container_width=True)
+                        else:
+                            st.info("Frequency spectrum not available for this section type")
                     
                     with col2:
                         if display_type == "Amplitude":
@@ -1128,7 +1149,7 @@ def display_bandwidth_enhancement_tab(enhancer):
                         # Frequency spectrum for enhanced/difference crossline
                         if display_type == "Amplitude":
                             freqs_enh, amp_enh = compute_average_spectrum(enhanced_xline, enhancer.sample_rate, "Crossline")
-                            if amp_enh is not None:
+                            if amp_enh is not None and len(amp_enh) > 0:
                                 fig_spec_enh = go.Figure()
                                 fig_spec_enh.add_trace(go.Scatter(x=freqs_orig, y=amp_orig, mode='lines', name='Original', line=dict(color='blue', dash='dash')))
                                 fig_spec_enh.add_trace(go.Scatter(x=freqs_enh, y=amp_enh, mode='lines', name='Enhanced', line=dict(color='red')))
@@ -1142,11 +1163,11 @@ def display_bandwidth_enhancement_tab(enhancer):
                 
                 else:  # Time Slice
                     with col2:
-                        time_slice = st.slider("Time Slice", 0, n_samples-1, n_samples//2, key="bw_time")
+                        time_slice = st.slider("Time Slice", 0, n_samples-1, time_slice, key="bw_time")
                     with col3:
                         display_type = st.selectbox("Display Type", ["Amplitude", "Difference"], key="bw_time_display")
                     
-                    actual_time = enhancer.geometry['samples'][time_slice]
+                    actual_time = enhancer.geometry['samples'][time_slice] if enhancer.geometry and 'samples' in enhancer.geometry else time_slice
                     
                     # Display time slice comparison
                     col1, col2 = st.columns(2)
@@ -1158,18 +1179,8 @@ def display_bandwidth_enhancement_tab(enhancer):
                                            aspect='auto')
                         st.plotly_chart(fig_orig, use_container_width=True)
                         
-                        # Frequency spectrum for original time slice
-                        freqs_orig, amp_orig = compute_average_spectrum(original_slice, enhancer.sample_rate, "Time Slice")
-                        if amp_orig is not None:
-                            fig_spec_orig = go.Figure()
-                            fig_spec_orig.add_trace(go.Scatter(x=freqs_orig, y=amp_orig, mode='lines', name='Original', line=dict(color='blue')))
-                            fig_spec_orig.update_layout(
-                                title=f"Frequency Spectrum - Original Time Slice {actual_time} ms",
-                                xaxis_title="Frequency (Hz)",
-                                yaxis_title="Amplitude",
-                                height=300
-                            )
-                            st.plotly_chart(fig_spec_orig, use_container_width=True)
+                        # Frequency spectrum for time slices is not meaningful
+                        st.info("Frequency spectrum analysis requires full seismic traces (use Inline or Crossline view)")
                     
                     with col2:
                         if display_type == "Amplitude":
@@ -1185,24 +1196,9 @@ def display_bandwidth_enhancement_tab(enhancer):
                                               color_continuous_scale=difference_colormap,
                                               aspect='auto')
                         st.plotly_chart(fig_enh, use_container_width=True)
-                        
-                        # Frequency spectrum for enhanced/difference time slice
-                        if display_type == "Amplitude":
-                            freqs_enh, amp_enh = compute_average_spectrum(enhanced_slice, enhancer.sample_rate, "Time Slice")
-                            if amp_enh is not None:
-                                fig_spec_enh = go.Figure()
-                                fig_spec_enh.add_trace(go.Scatter(x=freqs_orig, y=amp_orig, mode='lines', name='Original', line=dict(color='blue', dash='dash')))
-                                fig_spec_enh.add_trace(go.Scatter(x=freqs_enh, y=amp_enh, mode='lines', name='Enhanced', line=dict(color='red')))
-                                fig_spec_enh.update_layout(
-                                    title=f"Frequency Spectrum - Enhanced Time Slice {actual_time} ms",
-                                    xaxis_title="Frequency (Hz)",
-                                    yaxis_title="Amplitude",
-                                    height=300
-                                )
-                                st.plotly_chart(fig_spec_enh, use_container_width=True)
         
         except Exception as e:
-            st.error(f"Error processing file: {e}")
+            st.error(f"Error processing file: {str(e)}")
     
     else:
         st.info("👈 Please upload a 3D SEG-Y file to begin processing.")
@@ -1252,18 +1248,25 @@ def display_spectral_decomposition_tab(enhancer):
     
     n_inlines, n_xlines, n_samples = enhancer.original_data.shape
     
+    # Initialize section indices with default values
+    inline_idx = n_inlines // 2 if n_inlines > 0 else 0
+    crossline_idx = n_xlines // 2 if n_xlines > 0 else 0
+    time_slice = n_samples // 2 if n_samples > 0 else 0
+    actual_time = time_slice
+    
     if section_type == "Time Slice":
         with col2:
-            time_slice = st.slider("Time Slice", 0, n_samples-1, n_samples//2, key="sd_time")
-        actual_time = enhancer.geometry['samples'][time_slice]
+            time_slice = st.slider("Time Slice", 0, n_samples-1, time_slice, key="sd_time")
+        if enhancer.geometry and 'samples' in enhancer.geometry and len(enhancer.geometry['samples']) > time_slice:
+            actual_time = enhancer.geometry['samples'][time_slice]
         st.info(f"Selected time: {actual_time} ms")
     elif section_type == "Inline":
         with col2:
-            inline_idx = st.slider("Inline", 0, n_inlines-1, n_inlines//2, key="sd_inline")
+            inline_idx = st.slider("Inline", 0, n_inlines-1, inline_idx, key="sd_inline")
         st.info(f"Selected inline: {inline_idx}")
     else:  # Crossline
         with col2:
-            crossline_idx = st.slider("Crossline", 0, n_xlines-1, n_xlines//2, key="sd_crossline")
+            crossline_idx = st.slider("Crossline", 0, n_xlines-1, crossline_idx, key="sd_crossline")
         st.info(f"Selected crossline: {crossline_idx}")
     
     # Frequency range selection
@@ -1391,7 +1394,7 @@ def display_spectral_decomposition_tab(enhancer):
                         return spectral_analyzer.get_frequency_slice(freq_idx, time_slice)
                     elif section_type == "Inline":
                         return spectral_analyzer.get_frequency_inline(freq_idx, inline_idx)
-                    else:
+                    else:  # Crossline
                         return spectral_analyzer.get_frequency_crossline(freq_idx, crossline_idx)
                 
                 def get_display_data(data, section_type):
