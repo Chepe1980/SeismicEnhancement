@@ -726,12 +726,13 @@ PROCESSING_PRESETS = {
     }
 }
 
-# Available colormaps
+# Available colormaps - expanded to include all needed colormaps
 COLORMAPS = [
     'viridis', 'plasma', 'inferno', 'magma', 'cividis',
     'hot', 'cool', 'jet', 'rainbow', 'turbo',
     'gray', 'bone', 'pink', 'spring', 'summer', 'autumn', 'winter',
-    'RdBu', 'RdYlBu', 'PiYG', 'PRGn', 'BrBG', 'RdGy'
+    'RdBu', 'RdYlBu', 'PiYG', 'PRGn', 'BrBG', 'RdGy',
+    'Reds', 'Greens', 'Blues', 'Oranges', 'Purples'  # Added missing colormaps
 ]
 
 def safe_file_download(file_path, download_name):
@@ -849,6 +850,13 @@ def compute_average_spectrum(section_data, sample_rate, section_type):
             avg_amplitude /= n_traces
         return freqs, avg_amplitude
 
+def safe_get_colormap_index(colormap_name, default_index=0):
+    """Safely get the index of a colormap in the COLORMAPS list"""
+    try:
+        return COLORMAPS.index(colormap_name)
+    except ValueError:
+        return default_index
+
 def display_bandwidth_enhancement_tab(enhancer):
     """Display the bandwidth enhancement tab with inline/crossline comparison"""
     st.title("🌊 3D Seismic Bandwidth Enhancement Tool")
@@ -908,7 +916,8 @@ def display_bandwidth_enhancement_tab(enhancer):
     st.sidebar.header("🎨 Visualization Settings")
     st.sidebar.subheader("Colormap Selection")
     amplitude_colormap = st.sidebar.selectbox("Amplitude Colormap", COLORMAPS, index=0, key="bw_amp_cmap")
-    difference_colormap = st.sidebar.selectbox("Difference Colormap", COLORMAPS, index=COLORMAPS.index('RdBu'), key="bw_diff_cmap")
+    difference_colormap = st.sidebar.selectbox("Difference Colormap", COLORMAPS, 
+                                             index=safe_get_colormap_index('RdBu', 17), key="bw_diff_cmap")
     
     # Main processing
     if uploaded_file is not None:
@@ -1227,9 +1236,12 @@ def display_spectral_decomposition_tab(enhancer):
     st.sidebar.header("🎨 Spectral Decomposition Settings")
     st.sidebar.subheader("Colormap Selection")
     spectral_colormap = st.sidebar.selectbox("Spectral Colormap", COLORMAPS, index=0, key="sd_cmap")
-    red_component_cmap = st.sidebar.selectbox("Red Component Colormap", COLORMAPS, index=COLORMAPS.index('Reds'), key="sd_red_cmap")
-    green_component_cmap = st.sidebar.selectbox("Green Component Colormap", COLORMAPS, index=COLORMAPS.index('Greens'), key="sd_green_cmap")
-    blue_component_cmap = st.sidebar.selectbox("Blue Component Colormap", COLORMAPS, index=COLORMAPS.index('Blues'), key="sd_blue_cmap")
+    red_component_cmap = st.sidebar.selectbox("Red Component Colormap", COLORMAPS, 
+                                            index=safe_get_colormap_index('Reds', 22), key="sd_red_cmap")
+    green_component_cmap = st.sidebar.selectbox("Green Component Colormap", COLORMAPS, 
+                                              index=safe_get_colormap_index('Greens', 23), key="sd_green_cmap")
+    blue_component_cmap = st.sidebar.selectbox("Blue Component Colormap", COLORMAPS, 
+                                             index=safe_get_colormap_index('Blues', 24), key="sd_blue_cmap")
     
     # Section type selection
     col1, col2 = st.columns(2)
