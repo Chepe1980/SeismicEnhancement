@@ -6,7 +6,5 @@ scipy
 tqdm
 tempfile
 plotly
-psutil
-uuid
-struct
+
 
